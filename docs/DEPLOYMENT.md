@@ -1,7 +1,6 @@
 # LiveTel Deployment Guide
 
-> Step-by-step instructions for Oracle Cloud provisioning through live deployment.  
-> Sections are filled in as each build phase completes.
+> Step-by-step instructions for Oracle Cloud provisioning through live deployment.
 
 **Last updated:** July 5, 2026
 
@@ -15,12 +14,11 @@
 4. [Phase 4 — Install Ollama + Phi-3 Mini](#phase-4--install-ollama--phi-3-mini)
 5. [Phase 5 — Deploy LiveTel Application](#phase-5--deploy-livetel-application)
 6. [Phase 6 — Verify Live Demo](#phase-6--verify-live-demo)
+7. [Updating After Code Changes](#updating-after-code-changes)
 
 ---
 
 ## Phase 1 — Oracle Cloud: Create Your VM
-
-_Coming in next step — follow along when README is approved and backend build begins._
 
 ### 1.1 Sign in to Oracle Cloud
 
@@ -65,62 +63,192 @@ The wizard creates a public subnet, Internet Gateway, and route table automatica
 5. **Shape:** `VM.Standard.A1.Flex` — configure **4 OCPUs**, **24 GB RAM** (Free Tier max; use 2 OCPU / 12 GB if capacity is unavailable)
 6. **Networking:** select `livetel-vcn` / public subnet
 7. **Public IPv4 address:** Assign a public IPv4 address ✓
-8. **SSH keys:** Upload your public key (`~/.ssh/id_ed25519.pub`) or let Oracle generate one — **save the private key**
+8. **SSH keys:** Upload your public key or let Oracle generate one — **save the private key**
 9. Click **Create**
 
-Wait until **State** = `RUNNING`. Copy the **Public IP address** — you will need it for SSH and the live demo URL.
+Wait until **State** = `RUNNING`. Copy the **Public IP address**.
+
+**If Ampere capacity is unavailable:** try a different availability domain or region, or use 2 OCPU / 12 GB RAM.
 
 ---
 
 ## Phase 2 — Connect via SSH
 
-### From Windows (PowerShell)
+### Generate an SSH key on Windows (if you don't have one)
 
 ```powershell
-# If you uploaded your own key (default location):
-ssh ubuntu@<YOUR_PUBLIC_IP>
+ssh-keygen -t ed25519 -C "livetel-oracle" -f $env:USERPROFILE\.ssh\id_ed25519_livetel
+```
 
-# If Oracle generated the key:
+Upload the **public** key (`.pub` file contents) when creating the Oracle instance.
+
+### Connect
+
+```powershell
+# Your own key:
+ssh -i $env:USERPROFILE\.ssh\id_ed25519_livetel ubuntu@<YOUR_PUBLIC_IP>
+
+# Oracle-generated key:
 ssh -i C:\path\to\your-private-key.key ubuntu@<YOUR_PUBLIC_IP>
 ```
 
-**First connection:** type `yes` when prompted about host authenticity.
-
-**If connection times out:**
-- Confirm the instance is RUNNING
-- Confirm Security List allows port 22 from `0.0.0.0/0`
-- Confirm the instance has a **Public IP** (not just private)
+Type `yes` on first connection. If it times out, re-check Security List (port 22) and that the instance has a public IP.
 
 ---
 
 ## Phase 3 — VM Hardening & Base Packages
 
-_Run these commands on the VM after your first SSH login. Full commands will be confirmed when we deploy._
+Run on the VM after first SSH login:
 
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y ufw fail2ban git curl nginx python3-pip python3-venv
-# Node.js 20 — installed when we deploy the frontend
+
+# Firewall — only SSH and HTTP
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw enable
+
+# Fail2Ban for SSH
+sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+sudo systemctl enable fail2ban --now
+
+# Node.js 20 (required for Vite frontend build)
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v   # should show v20.x
 ```
 
 ---
 
 ## Phase 4 — Install Ollama + Phi-3 Mini
 
-_Detailed commands added when backend AI integration is complete._
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+If the install script fails on ARM64:
+
+```bash
+sudo curl -L https://ollama.com/download/ollama-linux-arm64 -o /usr/bin/ollama
+sudo chmod +x /usr/bin/ollama
+```
+
+Pull the model and verify:
+
+```bash
+sudo systemctl enable ollama --now
+ollama pull phi3:mini
+ollama run phi3:mini "Hello"   # quick test — Ctrl+D to exit
+```
 
 ---
 
 ## Phase 5 — Deploy LiveTel Application
 
-_Git clone, backend venv, frontend build, systemd, Nginx — added after application code is ready._
+### 5.1 Clone the repository
+
+```bash
+cd ~
+git clone https://github.com/ObiRonKenobi/livetel.git
+cd livetel
+```
+
+### 5.2 Backend setup
+
+```bash
+cd ~/livetel/backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Test locally (optional — Ctrl+C to stop):
+
+```bash
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+### 5.3 Frontend build
+
+```bash
+cd ~/livetel/frontend
+npm install
+npm run build
+```
+
+Output: `frontend/dist/`
+
+### 5.4 Systemd service (backend)
+
+```bash
+sudo cp ~/livetel/deploy/systemd/livetel-backend.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable livetel-backend --now
+sudo systemctl status livetel-backend
+```
+
+### 5.5 Nginx configuration
+
+```bash
+sudo cp ~/livetel/deploy/nginx/livetel.conf /etc/nginx/sites-available/livetel
+sudo ln -sf /etc/nginx/sites-available/livetel /etc/nginx/sites-enabled/livetel
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+### 5.6 Confirm services
+
+```bash
+curl -s http://127.0.0.1:8000/api/health | python3 -m json.tool
+curl -s http://127.0.0.1/api/metrics | python3 -m json.tool
+```
 
 ---
 
 ## Phase 6 — Verify Live Demo
 
-_Checklist added before go-live._
+Open in a browser: **`http://<YOUR_PUBLIC_IP>`**
+
+Checklist:
+
+- [ ] Dashboard loads with LiveTel header and "AI-Powered VoIP Operations" subtitle
+- [ ] Active calls counter updates within a few seconds
+- [ ] Latency / jitter / packet loss charts populate after ~3 minutes
+- [ ] Within 5 minutes: injected anomaly alert appears (toll_fraud, carrier_outage, or congestion)
+- [ ] Within 1–2 minutes after anomaly: AI alert appears (requires Ollama running)
+- [ ] `http://<YOUR_PUBLIC_IP>/api/health` returns `"status": "ok"`
+
+Share with your boss:
+
+- **Live demo:** `http://<YOUR_PUBLIC_IP>`
+- **Source code:** https://github.com/ObiRonKenobi/livetel
 
 ---
 
-*This document grows with the project. Each completed build phase adds verified, copy-paste commands.*
+## Updating After Code Changes
+
+On the VM after you push new code to GitHub:
+
+```bash
+cd ~/livetel
+git pull
+cd backend && source venv/bin/activate && pip install -r requirements.txt
+cd ../frontend && npm install && npm run build
+sudo systemctl restart livetel-backend nginx
+```
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `502 Bad Gateway` on `/api/` | `sudo systemctl status livetel-backend` — restart if failed |
+| AI alerts show `AI_error` | Check Ollama: `systemctl status ollama`, `ollama list` |
+| Charts empty | Wait 3+ minutes; confirm backend is generating CDRs |
+| Can't SSH | Check OCI Security List port 22; confirm public IP |
+| `npm run build` fails | Ensure Node 20+: `node -v` |

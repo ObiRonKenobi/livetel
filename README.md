@@ -1,8 +1,8 @@
 # LiveTel — AI-Powered VoIP Operations Demo
 
 > **Project started:** July 5, 2026  
-> **Status:** Placeholder repository — active development in progress  
-> **Live demo:** _Coming soon_ (`http://<oracle-vm-ip>`)  
+> **Status:** Application code complete — ready for Oracle VM deployment  
+> **Live demo:** _Deploy using [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)_ → `http://<oracle-vm-ip>`  
 > **Repository:** [github.com/ObiRonKenobi/livetel](https://github.com/ObiRonKenobi/livetel)
 
 ---
@@ -48,7 +48,7 @@ This project documents the full journey from concept to deployed demo:
 
 ---
 
-## Key Capabilities (Planned)
+## Key Capabilities
 
 - **Synthetic VoIP traffic** — 3–8 CDRs/sec with realistic QoS metrics (MOS, latency, jitter, packet loss, SIP codes)
 - **Scheduled anomaly injection** — toll fraud spikes, carrier outages, network congestion (every 5 minutes)
@@ -58,33 +58,38 @@ This project documents the full journey from concept to deployed demo:
 
 ---
 
-## Project Structure (In Progress)
+## Project Structure
 
 ```
 livetel/
-├── README.md                 ← You are here
-├── EXECUTIVE_SUMMARY.md      ← One-page report for leadership (planned)
+├── README.md
+├── EXECUTIVE_SUMMARY.md      ← One-page report for leadership
 ├── docs/
-│   ├── DEPLOYMENT.md         ← Step-by-step Oracle VM + deploy guide (planned)
-│   └── executive-summary.pdf ← Printable summary (planned)
-├── backend/                  ← FastAPI application (planned)
-├── frontend/                 ← React dashboard (planned)
-└── deploy/                   ← Nginx + systemd configs (planned)
+│   └── DEPLOYMENT.md         ← Step-by-step Oracle VM + deploy guide
+├── backend/                  ← FastAPI application
+├── frontend/                 ← React dashboard (Vite + Tailwind + Recharts)
+└── deploy/                   ← Nginx + systemd configs
 ```
+
+---
+
+## Quick Start (Local Backend Dev)
+
+```bash
+cd backend
+python3 -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Frontend requires **Node.js 20+** (build on the Oracle VM — see deployment guide).
 
 ---
 
 ## Documentation
 
-Step-by-step guides will be added as each phase completes:
-
-- [ ] **Oracle Cloud** — account, VCN, security lists, Ampere VM, SSH access
-- [ ] **VM hardening** — UFW, fail2ban, package installs
-- [ ] **Ollama** — install Phi-3 Mini on ARM64
-- [ ] **Application deploy** — git clone, build, systemd, Nginx
-- [ ] **Verification** — live dashboard and AI alert checklist
-
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) _(coming soon)_.
+- [**Deployment guide**](docs/DEPLOYMENT.md) — Oracle VM provisioning through go-live
+- [**Executive summary**](EXECUTIVE_SUMMARY.md) — one-page report for leadership
 
 ---
 
