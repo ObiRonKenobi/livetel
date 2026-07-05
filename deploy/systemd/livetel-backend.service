@@ -3,9 +3,9 @@ Description=LiveTel Backend (FastAPI)
 After=network.target
 
 [Service]
-User=debian
-WorkingDirectory=/home/debian/livetel/backend
-ExecStart=/home/debian/livetel/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+User=ubuntu
+WorkingDirectory=/home/ubuntu/livetel/backend
+ExecStart=/home/ubuntu/livetel/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
