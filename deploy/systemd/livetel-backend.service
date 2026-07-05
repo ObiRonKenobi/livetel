@@ -9,6 +9,7 @@ ExecStart=/home/ubuntu/livetel/backend/venv/bin/uvicorn main:app --host 127.0.0.
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=USE_TEMPLATE_AI=true
 
 [Install]
 WantedBy=multi-user.target

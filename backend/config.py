@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     metrics_window_seconds: int = 60
     prune_hours: int = 24
     ai_alert_cooldown_seconds: int = 120
+    use_template_ai: bool = False
 
 
 settings = Settings()

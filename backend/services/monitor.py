@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import SessionLocal
 from models import Alert, CDR
+from services.template_analysis import template_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,13 @@ def monitor_and_alert() -> None:
         data = _aggregate(recent)
         anomaly = _detect_anomaly(data)
         if not anomaly or not _should_emit_ai_alert(anomaly):
+            return
+
+        if settings.use_template_ai:
+            ai_text = template_analysis(anomaly, data)
+            session.add(Alert(type=f"AI_{anomaly}", details=ai_text))
+            session.commit()
+            logger.info("Template AI alert created for %s", anomaly)
             return
 
         prompt = f"""You are a VoIP network expert. The following metrics indicate a '{anomaly}' event:
