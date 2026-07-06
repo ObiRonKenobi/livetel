@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import not_, or_
+from sqlalchemy import case, func, not_, or_
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -46,11 +46,19 @@ def _parse_details(details: str) -> tuple[str, str]:
 @router.get("/alerts/stats", response_model=AlertStatsResponse)
 def get_alert_stats(db: Session = Depends(get_db)) -> AlertStatsResponse:
     cutoff = _alert_cutoff()
-    base = db.query(Alert).filter(Alert.timestamp >= cutoff, _hide_legacy_ai())
+    open_count, false_positive, resolved = (
+        db.query(
+            func.sum(case((Alert.dismissed_status.is_(None), 1), else_=0)),
+            func.sum(case((Alert.dismissed_status == "false_positive", 1), else_=0)),
+            func.sum(case((Alert.dismissed_status == "resolved", 1), else_=0)),
+        )
+        .filter(Alert.timestamp >= cutoff, _hide_legacy_ai())
+        .one()
+    )
     return AlertStatsResponse(
-        open=base.filter(Alert.dismissed_status.is_(None)).count(),
-        false_positive=base.filter(Alert.dismissed_status == "false_positive").count(),
-        resolved=base.filter(Alert.dismissed_status == "resolved").count(),
+        open=int(open_count or 0),
+        false_positive=int(false_positive or 0),
+        resolved=int(resolved or 0),
         window_hours=ALERT_WINDOW_HOURS,
     )
 

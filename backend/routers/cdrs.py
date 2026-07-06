@@ -115,40 +115,32 @@ def _alert_severity_for(ts: datetime, windows: list[tuple[datetime, datetime, st
     return best
 
 
-def _fetch_alert_correlated_cdrs(db: Session, base_cutoff: datetime) -> list[CDR]:
-    windows = _alert_windows(db)
-    if not windows:
-        return []
-    time_filters = [
-        and_(CDR.timestamp >= max(start, base_cutoff), CDR.timestamp <= end)
-        for start, end, _ in windows
-    ]
-    return (
-        db.query(CDR)
-        .filter(CDR.timestamp >= base_cutoff, or_(*time_filters))
-        .order_by(CDR.id.desc())
-        .all()
-    )
-
-
 def _alert_severity_by_call_id(
     db: Session,
-    base_cutoff: datetime,
+    call_ids: set[str],
     windows: list[tuple[datetime, datetime, str]],
 ) -> dict[str, str]:
     """Map call_id → severity when any leg falls inside an alert window."""
+    if not call_ids or not windows:
+        return {}
+    earliest = min(start for start, _, _ in windows)
+    rows = (
+        db.query(CDR.call_id, CDR.timestamp)
+        .filter(CDR.call_id.in_(call_ids), CDR.timestamp >= earliest)
+        .all()
+    )
     by_call: dict[str, str] = {}
-    for r in _fetch_alert_correlated_cdrs(db, base_cutoff):
-        sev = _alert_severity_for(r.timestamp, windows)
+    for call_id, ts in rows:
+        sev = _alert_severity_for(ts, windows)
         if not sev:
             continue
-        prev = by_call.get(r.call_id)
+        prev = by_call.get(call_id)
         if sev == "critical" or prev == "critical":
-            by_call[r.call_id] = "critical"
+            by_call[call_id] = "critical"
         elif prev:
-            by_call[r.call_id] = prev
+            by_call[call_id] = prev
         else:
-            by_call[r.call_id] = sev
+            by_call[call_id] = sev
     return by_call
 
 
@@ -183,8 +175,8 @@ def get_cdrs(
         else:
             query = query.filter(_search_clause(term))
 
-    total_in_db = query.count()
     max_browsable = page_size * MAX_CDR_PAGES
+    total_in_db = query.count() if term else max_browsable
     total_count = min(total_in_db, max_browsable)
     total_pages = MAX_CDR_PAGES
     safe_page = min(max(1, page), MAX_CDR_PAGES)
@@ -195,7 +187,7 @@ def get_cdrs(
     call_ids = {r.call_id for r in rows}
     status_map = _build_call_status_map(call_ids)
     windows = _alert_windows(db)
-    alert_by_call = _alert_severity_by_call_id(db, cutoff, windows)
+    alert_by_call = _alert_severity_by_call_id(db, call_ids, windows)
 
     items = [
         _cdr_to_response(
@@ -229,7 +221,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
     cid = rows[0].call_id
     status = "active" if cid in active_call_ids() else "completed"
     windows = _alert_windows(db)
-    alert_by_call = _alert_severity_by_call_id(db, datetime.utcnow() - timedelta(hours=settings.prune_hours), windows)
+    alert_by_call = _alert_severity_by_call_id(db, {cid}, windows)
 
     return SipFlowResponse(
         call_id=cid,

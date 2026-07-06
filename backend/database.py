@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import settings
@@ -9,7 +9,18 @@ from models import Base
 engine = create_engine(
     f"sqlite:///{settings.db_path}",
     connect_args={"check_same_thread": False},
+    pool_pre_ping=True,
 )
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_conn, _connection_record) -> None:
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA cache_size=-64000")
+    cursor.execute("PRAGMA temp_store=MEMORY")
+    cursor.close()
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
@@ -38,6 +49,13 @@ def ensure_schema() -> None:
             conn.execute(text("DROP TABLE IF EXISTS alerts"))
 
     Base.metadata.create_all(bind=engine)
+
+    inspector = inspect(engine)
+    if inspector.has_table("cdrs"):
+        cdr_indexes = {idx["name"] for idx in inspector.get_indexes("cdrs")}
+        if "ix_cdrs_timestamp" not in cdr_indexes:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_cdrs_timestamp ON cdrs (timestamp)"))
 
     inspector = inspect(engine)
     if inspector.has_table("alerts"):

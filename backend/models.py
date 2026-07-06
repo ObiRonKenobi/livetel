@@ -12,7 +12,7 @@ class CDR(Base):
     __tablename__ = "cdrs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     call_id: Mapped[str] = mapped_column(String, index=True)
     direction: Mapped[str] = mapped_column(String)  # inbound | outbound
     sip_method: Mapped[str] = mapped_column(String)  # INVITE, BYE, REFER, etc.
@@ -31,7 +31,7 @@ class Alert(Base):
     __tablename__ = "alerts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     type: Mapped[str] = mapped_column(String)
     severity: Mapped[str] = mapped_column(String, default="warning")
     details: Mapped[str] = mapped_column(String)

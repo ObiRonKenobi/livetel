@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -11,6 +11,9 @@ const CDRS_URL = '/api/cdrs'
 const CDR_PAGE_SIZE = 100
 const CDR_MAX_PAGES = 10
 const CDR_BROWSE_MAX = CDR_PAGE_SIZE * CDR_MAX_PAGES
+const POLL_METRICS_MS = 4000
+const POLL_ALERTS_MS = 12000
+const POLL_CDR_MS = 5000
 const HISTORY_LIMIT = 60
 const READ_KEY = 'livetel-read-alert-ids'
 const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -122,7 +125,7 @@ function formatAlertTime(isoString) {
   })
 }
 
-function MetricChart({ title, dataKey, color, data, unit = '' }) {
+const MetricChart = memo(function MetricChart({ title, dataKey, color, data, unit = '' }) {
   return (
     <div className="bg-panel border border-border rounded-lg p-4 shadow-lg">
       <h2 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wide">{title}</h2>
@@ -138,7 +141,7 @@ function MetricChart({ title, dataKey, color, data, unit = '' }) {
       {unit && <p className="text-xs text-gray-500 mt-1">{unit}</p>}
     </div>
   )
-}
+})
 
 function Modal({ title, onClose, children, wide }) {
   return (
@@ -452,7 +455,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
     }
     fetchCdrs()
     if (page === 1 && !searching) {
-      const id = setInterval(fetchCdrs, 3000)
+      const id = setInterval(fetchCdrs, POLL_CDR_MS)
       return () => clearInterval(id)
     }
   }, [search, searching, page])
@@ -629,14 +632,17 @@ export default function App() {
         const res = await fetch(METRICS_URL)
         const data = await res.json()
         setMetrics(data)
-        setHistory((prev) => [...prev, {
-          time: new Date().toLocaleTimeString(),
-          avg_latency: data.avg_latency,
-          avg_jitter: data.avg_jitter,
-          avg_packet_loss: data.avg_packet_loss,
-          avg_mos: data.avg_mos,
-          active_calls: data.active_calls,
-        }].slice(-HISTORY_LIMIT))
+        setHistory((prev) => {
+          if (tab !== 'overview') return prev
+          return [...prev, {
+            time: new Date().toLocaleTimeString(),
+            avg_latency: data.avg_latency,
+            avg_jitter: data.avg_jitter,
+            avg_packet_loss: data.avg_packet_loss,
+            avg_mos: data.avg_mos,
+            active_calls: data.active_calls,
+          }].slice(-HISTORY_LIMIT)
+        })
       } catch { /* keep */ }
     }
 
@@ -654,10 +660,10 @@ export default function App() {
 
     fetchMetrics()
     fetchAlerts()
-    const a = setInterval(fetchMetrics, 3000)
-    const b = setInterval(fetchAlerts, 10000)
+    const a = setInterval(fetchMetrics, POLL_METRICS_MS)
+    const b = setInterval(fetchAlerts, POLL_ALERTS_MS)
     return () => { clearInterval(a); clearInterval(b) }
-  }, [])
+  }, [tab])
 
   useEffect(() => {
     setReadIds((prev) => {
@@ -790,7 +796,7 @@ export default function App() {
       )}
       {selectedCallId && <CallFlowModal callId={selectedCallId} onClose={() => setSelectedCallId(null)} />}
 
-      <footer className="mt-8 text-center text-xs text-gray-600">Metrics & CDR 3s · SIP alerts 10s · 24h retention</footer>
+      <footer className="mt-8 text-center text-xs text-gray-600">Metrics {POLL_METRICS_MS / 1000}s · CDR {POLL_CDR_MS / 1000}s · Alerts {POLL_ALERTS_MS / 1000}s · 24h retention</footer>
     </div>
   )
 }
