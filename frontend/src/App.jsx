@@ -5,6 +5,7 @@ import {
 import LiveTelLogo from './LiveTelLogo'
 
 const METRICS_URL = '/api/metrics'
+const METRICS_HISTORY_URL = '/api/metrics/history'
 const ALERTS_URL = '/api/alerts'
 const ALERT_STATS_URL = '/api/alerts/stats'
 const CDRS_URL = '/api/cdrs'
@@ -14,7 +15,7 @@ const CDR_BROWSE_MAX = CDR_PAGE_SIZE * CDR_MAX_PAGES
 const POLL_METRICS_MS = 4000
 const POLL_ALERTS_MS = 12000
 const POLL_CDR_MS = 5000
-const HISTORY_LIMIT = 60
+const CHART_HISTORY_MINUTES = 60
 const READ_KEY = 'livetel-read-alert-ids'
 const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
 
@@ -125,6 +126,20 @@ function formatAlertTime(isoString) {
   })
 }
 
+function formatChartTime(isoString) {
+  return parseApiTime(isoString).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+}
+
+function mapHistoryPoints(points) {
+  return (points || []).map((p) => ({
+    time: formatChartTime(p.time),
+    avg_latency: p.avg_latency,
+    avg_jitter: p.avg_jitter,
+    avg_packet_loss: p.avg_packet_loss,
+    avg_mos: p.avg_mos,
+  }))
+}
+
 function alertSummary(details) {
   if (!details) return ''
   const idx = details.indexOf('Root cause:')
@@ -141,7 +156,7 @@ const MetricChart = memo(function MetricChart({ title, dataKey, color, data, uni
           <XAxis dataKey="time" stroke="#888" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
           <YAxis stroke="#888" tick={{ fontSize: 10 }} />
           <Tooltip contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #333' }} labelStyle={{ color: '#00d4ff' }} />
-          <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} />
+          <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} connectNulls={false} />
         </LineChart>
       </ResponsiveContainer>
       {unit && <p className="text-xs text-gray-500 mt-1">{unit}</p>}
@@ -639,19 +654,15 @@ export default function App() {
     const fetchMetrics = async () => {
       try {
         const res = await fetch(METRICS_URL)
+        setMetrics(await res.json())
+      } catch { /* keep */ }
+    }
+
+    const fetchMetricsHistory = async () => {
+      try {
+        const res = await fetch(METRICS_HISTORY_URL)
         const data = await res.json()
-        setMetrics(data)
-        setHistory((prev) => {
-          if (tab !== 'overview') return prev
-          return [...prev, {
-            time: new Date().toLocaleTimeString(),
-            avg_latency: data.avg_latency,
-            avg_jitter: data.avg_jitter,
-            avg_packet_loss: data.avg_packet_loss,
-            avg_mos: data.avg_mos,
-            active_calls: data.active_calls,
-          }].slice(-HISTORY_LIMIT)
-        })
+        setHistory(mapHistoryPoints(data.points))
       } catch { /* keep */ }
     }
 
@@ -668,11 +679,18 @@ export default function App() {
     }
 
     fetchMetrics()
+    fetchMetricsHistory()
     fetchAlerts()
+
     const a = setInterval(fetchMetrics, POLL_METRICS_MS)
     const b = setInterval(fetchAlerts, POLL_ALERTS_MS)
-    return () => { clearInterval(a); clearInterval(b) }
-  }, [tab])
+    const c = setInterval(fetchMetricsHistory, POLL_METRICS_MS)
+    return () => {
+      clearInterval(a)
+      clearInterval(b)
+      clearInterval(c)
+    }
+  }, [])
 
   useEffect(() => {
     setReadIds((prev) => {
@@ -764,10 +782,10 @@ export default function App() {
           </div>
           <div className="mb-4"><CompactSipCodes errorCodes={metrics.error_codes} /></div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <MetricChart title="Latency" dataKey="avg_latency" color="#00d4ff" data={history} unit="ms" />
-            <MetricChart title="Jitter" dataKey="avg_jitter" color="#a78bfa" data={history} unit="ms" />
-            <MetricChart title="Packet Loss" dataKey="avg_packet_loss" color="#ff073a" data={history} unit="%" />
-            <MetricChart title="MOS Score" dataKey="avg_mos" color="#34d399" data={history} />
+            <MetricChart title="Latency" dataKey="avg_latency" color="#00d4ff" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
+            <MetricChart title="Jitter" dataKey="avg_jitter" color="#a78bfa" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
+            <MetricChart title="Packet Loss" dataKey="avg_packet_loss" color="#ff073a" data={history} unit={`% · last ${CHART_HISTORY_MINUTES} min`} />
+            <MetricChart title="MOS Score" dataKey="avg_mos" color="#34d399" data={history} unit={`last ${CHART_HISTORY_MINUTES} min`} />
           </div>
         </>
       )}

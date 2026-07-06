@@ -11,6 +11,20 @@ class MetricsResponse(BaseModel):
     error_codes: dict[str, int]
 
 
+class MetricsHistoryPoint(BaseModel):
+    time: str
+    avg_latency: float | None = None
+    avg_jitter: float | None = None
+    avg_packet_loss: float | None = None
+    avg_mos: float | None = None
+
+
+class MetricsHistoryResponse(BaseModel):
+    points: list[MetricsHistoryPoint]
+    window_minutes: int
+    bucket_minutes: int
+
+
 class CdrResponse(BaseModel):
     id: int
     time: str

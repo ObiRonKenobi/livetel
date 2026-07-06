@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     ollama_url: str = "http://127.0.0.1:11434/api/generate"
     ollama_model: str = "phi3:mini"
     metrics_window_seconds: int = 60
+    metrics_history_minutes: int = 60
+    metrics_history_bucket_minutes: int = 1
     prune_hours: int = 24
     ai_alert_cooldown_seconds: int = 120
     use_template_ai: bool = False
