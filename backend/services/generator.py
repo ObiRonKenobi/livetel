@@ -160,7 +160,7 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
     if anomaly:
         qos = _apply_qos_anomaly(qos, anomaly)
 
-    failed = anomaly in ("carrier_outage", "trunk_exhaustion", "auth_failure", "dns_sip_failure")
+    failed = anomaly in ("sip_trunk_unreachable", "sip_503_overload", "auth_failure", "sip_dns_timeout")
     if anomaly == "auth_failure":
         qos = _baseline_qos()
 

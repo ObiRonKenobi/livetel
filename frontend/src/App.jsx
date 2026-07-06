@@ -41,12 +41,36 @@ function withinAlertWindow(isoString) {
 }
 
 function filterRecentAlerts(list) {
-  return list.filter((a) => withinAlertWindow(a.time))
+  return list.filter((a) => withinAlertWindow(a.time) && !a.type.startsWith('AI_') && a.type !== 'AI_error')
+}
+
+const ALERT_TYPE_LABELS = {
+  sip_trunk_unreachable: 'SIP Trunk Unreachable',
+  toll_fraud: 'SIP Toll Fraud',
+  sip_503_overload: 'SIP 503 — Service Unavailable',
+  auth_failure: 'SIP Auth Failure',
+  rtp_packet_loss: 'RTP Packet Loss',
+  sip_latency_spike: 'SIP Latency Spike',
+  codec_quality_drop: 'Codec Quality Drop',
+  one_way_audio: 'One-Way Audio (RTP)',
+  softphone_registration_failure: 'Softphone Registration Failure',
+  sip_dns_timeout: 'SIP DNS / Timeout',
+  carrier_outage: 'SIP Trunk Unreachable',
+  trunk_exhaustion: 'SIP 503 — Service Unavailable',
+  congestion: 'RTP Packet Loss',
+  latency_spike: 'SIP Latency Spike',
+  mos_degradation: 'Codec Quality Drop',
+  dns_sip_failure: 'SIP DNS / Timeout',
+  suspicious_international: 'SIP Toll Fraud',
+}
+
+function alertTypeLabel(type) {
+  const base = type.startsWith('AI_') ? type.slice(3) : type
+  return ALERT_TYPE_LABELS[base] || base.replace(/_/g, ' ')
 }
 
 function severityFor(alert) {
-  if (alert.type === 'AI_error') return 'critical'
-  return alert.severity || (alert.type.startsWith('AI_') ? 'critical' : 'warning')
+  return alert.severity || 'warning'
 }
 
 function severityStyle(sev) {
@@ -114,7 +138,6 @@ function Modal({ title, onClose, children, wide }) {
 function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
   const sev = severityFor(alert)
   const st = severityStyle(sev)
-  const isAi = alert.type.startsWith('AI_')
 
   return (
     <div
@@ -128,10 +151,9 @@ function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
         <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded ${st.badge}`}>
           {sev}
         </span>
-        {isAi && <span className="text-[10px] font-bold uppercase text-neonRed">AI Analysis</span>}
         {unread && <span className="text-[10px] bg-white/10 text-white px-1.5 rounded">NEW</span>}
         <span className="text-xs text-gray-500">{formatRelativeTime(alert.time)}</span>
-        <span className={`text-xs font-bold uppercase ${st.text}`}>{alert.type.replace(/_/g, ' ')}</span>
+        <span className={`text-xs font-bold uppercase ${st.text}`}>{alertTypeLabel(alert.type)}</span>
       </div>
       <p className={`text-gray-200 leading-relaxed whitespace-pre-wrap ${prominent ? 'text-sm md:text-base' : 'text-sm line-clamp-4'}`}>
         {alert.details}
@@ -173,7 +195,7 @@ function AlertTicker({ alerts, unreadIds, onAlertClick }) {
             return (
               <span key={`${alert.id}-${i}`} className="inline-flex items-center gap-3 shrink-0 text-sm">
                 <span className={`font-bold uppercase text-xs px-1.5 rounded ${st.badge}`}>{severityFor(alert)}</span>
-                <span className={`font-bold uppercase text-xs ${st.text}`}>{alert.type.replace(/_/g, ' ')}</span>
+                <span className={`font-bold uppercase text-xs ${st.text}`}>{alertTypeLabel(alert.type)}</span>
                 <span className="text-gray-400 max-w-sm truncate">{alert.details.slice(0, 70)}…</span>
                 <span className="text-gray-600 text-xs">{formatRelativeTime(alert.time)}</span>
                 <span className="text-border">|</span>
@@ -289,7 +311,7 @@ function AlertDetailModal({ alert, onClose, onDismiss }) {
   }
 
   return (
-    <Modal title={alert.type.replace(/_/g, ' ').toUpperCase()} onClose={onClose} wide>
+    <Modal title={alertTypeLabel(alert.type).toUpperCase()} onClose={onClose} wide>
       {!ctx && <p className="text-gray-500">Loading analysis…</p>}
       {ctx && (
         <div className="space-y-5">
@@ -559,11 +581,11 @@ export default function App() {
   return (
     <div className="min-h-screen bg-darkBg p-4 md:p-6">
       <header className="flex flex-col md:flex-row md:justify-between md:items-end gap-4 mb-4 border-b border-border pb-4">
-        <div className="flex items-center gap-3">
-          <LiveTelLogo size={48} className="shrink-0" />
-          <div>
-            <h1 className="text-3xl md:text-4xl font-bold text-vibrantBlue tracking-tight">LiveTel</h1>
-            <p className="text-gray-400 text-sm mt-1">AI-Powered VoIP Operations</p>
+        <div className="flex items-stretch gap-3">
+          <LiveTelLogo />
+          <div className="flex flex-col justify-center">
+            <h1 className="text-3xl md:text-4xl font-bold text-vibrantBlue tracking-tight leading-tight">LiveTel</h1>
+            <p className="text-gray-400 text-sm mt-0.5 leading-snug">AI-Powered VoIP Operations</p>
           </div>
         </div>
         <div className="text-right">
@@ -653,7 +675,7 @@ export default function App() {
       {detailAlert && <AlertDetailModal alert={detailAlert} onClose={() => setDetailAlert(null)} onDismiss={dismissAlert} />}
       {selectedCallId && <CallFlowModal callId={selectedCallId} onClose={() => setSelectedCallId(null)} />}
 
-      <footer className="mt-8 text-center text-xs text-gray-600">Metrics & CDR 3s · Alerts 10s · 10 anomaly types · 24h retention</footer>
+      <footer className="mt-8 text-center text-xs text-gray-600">Metrics & CDR 3s · SIP alerts 10s · 24h retention</footer>
     </div>
   )
 }
