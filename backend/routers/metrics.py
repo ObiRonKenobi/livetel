@@ -7,6 +7,7 @@ from config import settings
 from database import get_db
 from models import CDR
 from schemas import MetricsResponse
+from services.generator import active_call_count, avg_call_duration_sec
 
 router = APIRouter(prefix="/api", tags=["metrics"])
 
@@ -18,7 +19,8 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
 
     if not recent:
         return MetricsResponse(
-            active_calls=0,
+            active_calls=active_call_count(),
+            avg_call_duration_sec=round(avg_call_duration_sec(), 0),
             avg_latency=0.0,
             avg_jitter=0.0,
             avg_packet_loss=0.0,
@@ -35,9 +37,9 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
         error_codes[key] = error_codes.get(key, 0) + 1
 
     count = len(sample)
-    active = len({c.call_id for c in established})
     return MetricsResponse(
-        active_calls=active,
+        active_calls=active_call_count(),
+        avg_call_duration_sec=round(avg_call_duration_sec(), 0),
         avg_latency=round(sum(c.latency for c in sample) / count, 1),
         avg_jitter=round(sum(c.jitter for c in sample) / count, 1),
         avg_packet_loss=round(sum(c.packet_loss for c in sample) / count, 2),

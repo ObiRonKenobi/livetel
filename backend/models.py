@@ -35,3 +35,4 @@ class Alert(Base):
     type: Mapped[str] = mapped_column(String)
     severity: Mapped[str] = mapped_column(String, default="warning")
     details: Mapped[str] = mapped_column(String)
+    dismissed_status: Mapped[str | None] = mapped_column(String, nullable=True)

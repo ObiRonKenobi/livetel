@@ -46,3 +46,6 @@ def ensure_schema() -> None:
             with engine.begin() as conn:
                 conn.execute(text("DROP TABLE IF EXISTS alerts"))
             Base.metadata.create_all(bind=engine)
+        elif "dismissed_status" not in alert_cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE alerts ADD COLUMN dismissed_status VARCHAR"))

@@ -100,7 +100,7 @@ function Modal({ title, onClose, children, wide }) {
   )
 }
 
-function AlertCard({ alert, prominent, unread, onMarkRead, onOpenDetail, onClick }) {
+function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
   const sev = severityFor(alert)
   const st = severityStyle(sev)
   const isAi = alert.type.startsWith('AI_')
@@ -109,20 +109,11 @@ function AlertCard({ alert, prominent, unread, onMarkRead, onOpenDetail, onClick
     <div
       role="button"
       tabIndex={0}
-      onClick={onClick}
-      onDoubleClick={() => onOpenDetail(alert)}
-      onKeyDown={(e) => e.key === 'Enter' && onClick?.()}
+      onClick={() => onOpenDetail(alert)}
+      onKeyDown={(e) => e.key === 'Enter' && onOpenDetail(alert)}
       className={`relative rounded-lg bg-darkBg border border-border cursor-pointer transition-opacity hover:opacity-95 ${prominent ? 'p-5' : 'p-3'} border-l-4 ${st.border} ${st.glow} ${unread ? 'ring-1 ring-white/10' : 'opacity-80'}`}
     >
-      <button
-        type="button"
-        title="View details & SIP evidence"
-        onClick={(e) => { e.stopPropagation(); onOpenDetail(alert) }}
-        className="absolute top-3 right-3 text-gray-500 hover:text-vibrantBlue p-1"
-      >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-      </button>
-      <div className="flex flex-wrap items-center gap-2 mb-2 pr-8">
+      <div className="flex flex-wrap items-center gap-2 mb-2">
         <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded ${st.badge}`}>
           {sev}
         </span>
@@ -134,8 +125,18 @@ function AlertCard({ alert, prominent, unread, onMarkRead, onOpenDetail, onClick
       <p className={`text-gray-200 leading-relaxed whitespace-pre-wrap ${prominent ? 'text-sm md:text-base' : 'text-sm line-clamp-4'}`}>
         {alert.details}
       </p>
+      {prominent && (
+        <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
+          <button type="button" onClick={() => onDismiss(alert.id, 'resolved')} className="text-[10px] uppercase tracking-wide px-2 py-1 rounded bg-green-500/20 text-green-400 hover:bg-green-500/30">
+            Mark resolved
+          </button>
+          <button type="button" onClick={() => onDismiss(alert.id, 'false_positive')} className="text-[10px] uppercase tracking-wide px-2 py-1 rounded bg-gray-500/20 text-gray-400 hover:bg-gray-500/30">
+            False positive
+          </button>
+        </div>
+      )}
       {unread && (
-        <p className="text-[10px] text-gray-500 mt-2">Click to mark read · Double-click or ℹ for full analysis</p>
+        <p className="text-[10px] text-gray-500 mt-2">Click for full analysis & SIP evidence</p>
       )}
     </div>
   )
@@ -219,13 +220,18 @@ function CallFlowModal({ callId, onClose }) {
   )
 }
 
-function AlertDetailModal({ alert, onClose }) {
+function AlertDetailModal({ alert, onClose, onDismiss }) {
   const [ctx, setCtx] = useState(null)
   useEffect(() => {
     fetch(`/api/alerts/${alert.id}/context`).then((r) => r.json()).then(setCtx).catch(() => setCtx(null))
   }, [alert.id])
 
   const st = severityStyle(severityFor(alert))
+
+  const dismiss = (status) => {
+    onDismiss(alert.id, status)
+    onClose()
+  }
 
   return (
     <Modal title={alert.type.replace(/_/g, ' ').toUpperCase()} onClose={onClose} wide>
@@ -270,6 +276,14 @@ function AlertDetailModal({ alert, onClose }) {
                 </tbody>
               </table>
             </div>
+          </div>
+          <div className="flex flex-wrap gap-3 pt-2 border-t border-border">
+            <button type="button" onClick={() => dismiss('resolved')} className="text-xs uppercase tracking-wide px-4 py-2 rounded-lg bg-green-500/20 text-green-400 hover:bg-green-500/30 font-semibold">
+              Mark resolved
+            </button>
+            <button type="button" onClick={() => dismiss('false_positive')} className="text-xs uppercase tracking-wide px-4 py-2 rounded-lg bg-gray-500/20 text-gray-400 hover:bg-gray-500/30 font-semibold">
+              False positive — dismiss
+            </button>
           </div>
         </div>
       )}
@@ -388,6 +402,23 @@ export default function App() {
     })
   }, [alerts])
 
+  const dismissAlert = useCallback(async (id, status) => {
+    try {
+      await fetch(`/api/alerts/${id}/dismiss`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      })
+      setAlerts((prev) => prev.filter((a) => a.id !== id))
+      markRead(id)
+    } catch { /* keep */ }
+  }, [markRead])
+
+  const openAlertDetail = useCallback((alert) => {
+    markRead(alert.id)
+    setDetailAlert(alert)
+  }, [markRead])
+
   const unreadCount = useMemo(() => alerts.filter((a) => !readIds.has(a.id)).length, [alerts, readIds])
 
   useEffect(() => {
@@ -436,9 +467,8 @@ export default function App() {
     sipErrors: Object.entries(metrics.error_codes || {}).some(([c, n]) => Number(c) >= 400 && n > 5) ? 'bad' : 'good',
   }), [metrics])
 
-  const handleAlertClick = (alert) => {
-    markRead(alert.id)
-  }
+
+  const avgMins = metrics.avg_call_duration_sec ? Math.round(metrics.avg_call_duration_sec / 60) : 0
 
   return (
     <div className="min-h-screen bg-darkBg p-4 md:p-6">
@@ -448,8 +478,11 @@ export default function App() {
           <p className="text-gray-400 text-sm mt-1">AI-Powered VoIP Operations</p>
         </div>
         <div className="text-right">
-          <p className="text-xs text-gray-500 uppercase tracking-widest mb-1">Active Calls (60s)</p>
+          <p className="text-xs text-gray-500 uppercase tracking-widest mb-1">Active Calls (live)</p>
           <p className="text-4xl font-bold text-neonRed tabular-nums">{metrics.active_calls ?? 0}</p>
+          {avgMins > 0 && (
+            <p className="text-[10px] text-gray-600 mt-1">avg call length ~{avgMins} min</p>
+          )}
         </div>
       </header>
 
@@ -514,9 +547,8 @@ export default function App() {
               alert={alert}
               prominent
               unread={!readIds.has(alert.id)}
-              onMarkRead={markRead}
-              onOpenDetail={setDetailAlert}
-              onClick={() => handleAlertClick(alert)}
+              onOpenDetail={openAlertDetail}
+              onDismiss={dismissAlert}
             />
           ))}
         </div>
@@ -526,7 +558,7 @@ export default function App() {
         <CdrStreamTab search={cdrSearch} setSearch={setCdrSearch} onSelectCall={setSelectedCallId} />
       )}
 
-      {detailAlert && <AlertDetailModal alert={detailAlert} onClose={() => setDetailAlert(null)} />}
+      {detailAlert && <AlertDetailModal alert={detailAlert} onClose={() => setDetailAlert(null)} onDismiss={dismissAlert} />}
       {selectedCallId && <CallFlowModal callId={selectedCallId} onClose={() => setSelectedCallId(null)} />}
 
       <footer className="mt-8 text-center text-xs text-gray-600">Metrics & CDR 3s · Alerts 10s · 10 anomaly types · 24h retention</footer>

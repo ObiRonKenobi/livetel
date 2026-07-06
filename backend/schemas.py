@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 class MetricsResponse(BaseModel):
     active_calls: int
+    avg_call_duration_sec: float
     avg_latency: float
     avg_jitter: float
     avg_packet_loss: float
@@ -38,6 +39,10 @@ class AlertResponse(BaseModel):
     type: str
     severity: str
     details: str
+
+
+class DismissAlertRequest(BaseModel):
+    status: str  # false_positive | resolved
 
 
 class AlertContextResponse(BaseModel):

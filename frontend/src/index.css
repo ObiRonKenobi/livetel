@@ -25,7 +25,7 @@ body {
 .alert-ticker-track {
   display: flex;
   width: max-content;
-  animation: ticker-scroll 90s linear infinite;
+  animation: ticker-scroll 65s linear infinite; /* horizontal scroll speed (40s=fast, 90s=slow) */
 }
 
 .alert-ticker-track:hover {
