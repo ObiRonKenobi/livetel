@@ -29,7 +29,15 @@ cd ../frontend
 npm install
 npm run build
 
+echo "==> Publish frontend to /var/www..."
+sudo rm -rf /var/www/livetel
+sudo mkdir -p /var/www/livetel
+sudo cp -r dist/* /var/www/livetel/
+sudo chown -R www-data:www-data /var/www/livetel
+
 echo "==> Systemd + Nginx..."
+sudo iptables -C INPUT -p tcp -m tcp --dport 80 -j ACCEPT 2>/dev/null || \
+  sudo iptables -I INPUT 5 -p tcp -m tcp --dport 80 -j ACCEPT
 sudo cp ~/livetel/deploy/systemd/livetel-backend.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable livetel-backend --now

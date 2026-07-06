@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from database import engine, get_db
 from models import Base
-from routers import alerts, metrics
+from routers import alerts, cdrs, metrics
 from schemas import HealthResponse
 from services.generator import baseline_traffic, inject_anomaly
 from services.monitor import check_ollama_health, monitor_and_alert
@@ -44,6 +44,7 @@ app.add_middleware(
 )
 app.include_router(metrics.router)
 app.include_router(alerts.router)
+app.include_router(cdrs.router)
 
 health_router = APIRouter(prefix="/api", tags=["health"])
 

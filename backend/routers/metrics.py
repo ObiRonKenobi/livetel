@@ -22,6 +22,7 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
             avg_latency=0.0,
             avg_jitter=0.0,
             avg_packet_loss=0.0,
+            avg_mos=0.0,
             error_codes={},
         )
 
@@ -36,5 +37,6 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
         avg_latency=round(sum(c.latency for c in recent) / count, 1),
         avg_jitter=round(sum(c.jitter for c in recent) / count, 1),
         avg_packet_loss=round(sum(c.packet_loss for c in recent) / count, 2),
+        avg_mos=round(sum(c.mos for c in recent) / count, 2),
         error_codes=error_codes,
     )
