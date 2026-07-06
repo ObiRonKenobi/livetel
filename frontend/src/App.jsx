@@ -125,6 +125,12 @@ function formatAlertTime(isoString) {
   })
 }
 
+function alertSummary(details) {
+  if (!details) return ''
+  const idx = details.indexOf('Root cause:')
+  return (idx >= 0 ? details.slice(0, idx) : details).trim()
+}
+
 const MetricChart = memo(function MetricChart({ title, dataKey, color, data, unit = '' }) {
   return (
     <div className="bg-panel border border-border rounded-lg p-4 shadow-lg">
@@ -180,9 +186,12 @@ function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
         <span className="text-xs text-gray-500 tabular-nums" title={formatAlertTime(alert.time)}>{formatAlertTime(alert.time)}</span>
         <span className={`text-xs font-bold uppercase ${st.text}`}>{alertTypeLabel(alert.type)}</span>
       </div>
-      <p className={`text-gray-200 leading-relaxed whitespace-pre-wrap ${prominent ? 'text-sm md:text-base' : 'text-sm line-clamp-4'}`}>
-        {alert.details}
+      <p className={`text-gray-200 leading-relaxed whitespace-pre-wrap ${prominent ? 'text-sm md:text-base' : 'text-sm line-clamp-3'}`}>
+        {alertSummary(alert.details)}
       </p>
+      {prominent && (
+        <p className="text-[10px] text-gray-500 mt-2">Click for root cause, mitigation & SIP evidence</p>
+      )}
       {prominent && (
         <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
           <button type="button" onClick={() => onDismiss(alert.id, 'resolved')} className="text-[10px] uppercase tracking-wide px-2 py-1 rounded bg-green-500/20 text-green-400 hover:bg-green-500/30">
@@ -193,7 +202,7 @@ function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
           </button>
         </div>
       )}
-      {unread && (
+      {unread && !prominent && (
         <p className="text-[10px] text-gray-500 mt-2">Click for full analysis & SIP evidence</p>
       )}
     </div>
@@ -221,7 +230,7 @@ function AlertTicker({ alerts, unreadIds, onAlertClick }) {
               <span key={`${alert.id}-${i}`} className="inline-flex items-center gap-3 shrink-0 text-sm">
                 <span className={`font-bold uppercase text-xs px-1.5 rounded ${st.badge}`}>{severityFor(alert)}</span>
                 <span className={`font-bold uppercase text-xs ${st.text}`}>{alertTypeLabel(alert.type)}</span>
-                <span className="text-gray-400 max-w-sm truncate">{alert.details.slice(0, 70)}…</span>
+                <span className="text-gray-400 max-w-sm truncate">{alertSummary(alert.details).replace(/\s+/g, ' ').slice(0, 70)}…</span>
                 <span className="text-gray-600 text-xs tabular-nums">{formatAlertTime(alert.time)}</span>
                 <span className="text-border">|</span>
               </span>
@@ -342,7 +351,7 @@ function AlertDetailModal({ alert, onClose, onDismiss, onSelectCall }) {
         <div className="space-y-5">
           <div className={`p-4 rounded-lg border-l-4 ${st.border} bg-darkBg`}>
             <span className={`text-xs font-bold uppercase ${st.text}`}>{ctx.alert.severity} · {formatAlertTime(ctx.alert.time)}</span>
-            <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap">{ctx.alert.details}</p>
+            <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap">{alertSummary(ctx.alert.details)}</p>
           </div>
           <div>
             <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Root Cause</h3>
