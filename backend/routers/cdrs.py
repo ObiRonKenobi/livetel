@@ -2,7 +2,7 @@ import re
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import String, cast, not_, or_
+from sqlalchemy import String, and_, cast, not_, or_
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -112,6 +112,57 @@ def _alert_severity_for(ts: datetime, windows: list[tuple[datetime, datetime, st
     return best
 
 
+def _fetch_alert_correlated_cdrs(db: Session, base_cutoff: datetime) -> list[CDR]:
+    windows = _alert_windows(db)
+    if not windows:
+        return []
+    time_filters = [
+        and_(CDR.timestamp >= max(start, base_cutoff), CDR.timestamp <= end)
+        for start, end, _ in windows
+    ]
+    return (
+        db.query(CDR)
+        .filter(CDR.timestamp >= base_cutoff, or_(*time_filters))
+        .order_by(CDR.id.desc())
+        .all()
+    )
+
+
+def _alert_severity_by_call_id(
+    db: Session,
+    base_cutoff: datetime,
+    windows: list[tuple[datetime, datetime, str]],
+) -> dict[str, str]:
+    """Map call_id → severity when any leg falls inside an alert window."""
+    by_call: dict[str, str] = {}
+    for r in _fetch_alert_correlated_cdrs(db, base_cutoff):
+        sev = _alert_severity_for(r.timestamp, windows)
+        if not sev:
+            continue
+        prev = by_call.get(r.call_id)
+        if sev == "critical" or prev == "critical":
+            by_call[r.call_id] = "critical"
+        elif prev:
+            by_call[r.call_id] = prev
+        else:
+            by_call[r.call_id] = sev
+    return by_call
+
+
+def _resolve_alert_severity(
+    r: CDR,
+    windows: list[tuple[datetime, datetime, str]],
+    by_call: dict[str, str],
+) -> str | None:
+    direct = _alert_severity_for(r.timestamp, windows)
+    if direct == "critical":
+        return "critical"
+    inherited = by_call.get(r.call_id)
+    if direct:
+        return direct
+    return inherited
+
+
 @router.get("/cdrs", response_model=list[CdrResponse])
 def get_cdrs(
     db: Session = Depends(get_db),
@@ -133,20 +184,28 @@ def get_cdrs(
         else:
             query = query.filter(_search_clause(term))
             limit = max(limit, 300)
+        rows = query.order_by(CDR.id.desc()).limit(limit).all()
+    else:
+        recent = query.order_by(CDR.id.desc()).limit(limit).all()
+        alert_rows = _fetch_alert_correlated_cdrs(db, cutoff)
+        merged: dict[int, CDR] = {r.id: r for r in recent}
+        for r in alert_rows:
+            merged[r.id] = r
+        rows = sorted(merged.values(), key=lambda r: r.id, reverse=True)[:500]
 
-    rows = query.order_by(CDR.id.desc()).limit(limit).all()
     if not rows:
         return []
 
     call_ids = {r.call_id for r in rows}
     status_map = _build_call_status_map(call_ids)
     windows = _alert_windows(db)
+    alert_by_call = _alert_severity_by_call_id(db, cutoff, windows)
 
     return [
         _cdr_to_response(
             r,
             call_status=status_map.get(r.call_id, "completed"),
-            alert_severity=_alert_severity_for(r.timestamp, windows),
+            alert_severity=_resolve_alert_severity(r, windows, alert_by_call),
         )
         for r in rows
     ]
@@ -166,6 +225,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
     cid = rows[0].call_id
     status = "active" if cid in active_call_ids() else "completed"
     windows = _alert_windows(db)
+    alert_by_call = _alert_severity_by_call_id(db, datetime.utcnow() - timedelta(hours=settings.prune_hours), windows)
 
     return SipFlowResponse(
         call_id=cid,
@@ -173,7 +233,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
             _cdr_to_response(
                 r,
                 call_status=status,
-                alert_severity=_alert_severity_for(r.timestamp, windows),
+                alert_severity=_resolve_alert_severity(r, windows, alert_by_call),
             )
             for r in rows
         ],
