@@ -368,6 +368,33 @@ function AlertDetailModal({ alert, onClose, onDismiss }) {
   )
 }
 
+function CallStatusIcon({ status }) {
+  if (status === 'active') {
+    return (
+      <span title="Call active" className="inline-flex items-center gap-1 text-green-400">
+        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
+      </span>
+    )
+  }
+  return (
+    <span title="Call completed" className="inline-flex items-center">
+      <span className="w-2 h-2 rounded-full bg-gray-600 shrink-0" />
+    </span>
+  )
+}
+
+function CdrAlertIcon({ severity }) {
+  if (!severity) return <span className="inline-block w-4" aria-hidden />
+  const cls = severity === 'critical' ? 'text-neonRed' : 'text-yellow-400'
+  return (
+    <span title={`${severity} alert in this window`} className={`inline-flex ${cls}`} aria-label={`${severity} alert`}>
+      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+      </svg>
+    </span>
+  )
+}
+
 function CdrStreamTab({ search, setSearch, onSelectCall }) {
   const [cdrs, setCdrs] = useState([])
   const scrollRef = useRef(null)
@@ -414,6 +441,9 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
           {searching
             ? `${cdrs.length} matching event${cdrs.length === 1 ? '' : 's'}`
             : `${cdrs.length} events · scroll down to freeze · scroll to top for live`}
+          {' · '}
+          <span className="text-green-400">●</span> active
+          <span className="text-gray-600"> ●</span> completed
         </span>
       </div>
       <div className="bg-panel border border-border rounded-lg overflow-hidden">
@@ -421,6 +451,8 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-panel border-b border-border text-left text-xs uppercase tracking-wide text-gray-500">
               <tr>
+                <th className="px-2 py-3 w-8" title="Call status">●</th>
+                <th className="px-2 py-3 w-8" title="Alert">!</th>
                 <th className="px-3 py-3">Time</th>
                 <th className="px-3 py-3">Call ID</th>
                 <th className="px-3 py-3">Dir</th>
@@ -433,14 +465,16 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
             </thead>
             <tbody>
               {cdrs.length === 0 && (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-gray-500">No events match.</td></tr>
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-500">No events match.</td></tr>
               )}
               {cdrs.map((row) => (
                 <tr
                   key={row.id}
                   onClick={() => onSelectCall(row.call_id)}
-                  className="border-b border-border/50 hover:bg-vibrantBlue/5 cursor-pointer font-mono text-xs"
+                  className={`border-b border-border/50 hover:bg-vibrantBlue/5 cursor-pointer font-mono text-xs ${row.alert_severity === 'critical' ? 'bg-neonRed/5' : row.alert_severity === 'warning' ? 'bg-yellow-500/5' : ''}`}
                 >
+                  <td className="px-2 py-2 text-center"><CallStatusIcon status={row.call_status} /></td>
+                  <td className="px-2 py-2 text-center"><CdrAlertIcon severity={row.alert_severity} /></td>
                   <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{formatTime(row.time)}</td>
                   <td className="px-3 py-2 text-vibrantBlue">{row.call_id.slice(0, 10)}…</td>
                   <td className={`px-3 py-2 uppercase ${row.direction === 'inbound' ? 'text-green-400' : 'text-orange-300'}`}>{row.direction}</td>

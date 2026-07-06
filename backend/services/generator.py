@@ -47,6 +47,10 @@ def active_call_count() -> int:
     return len(_live)
 
 
+def active_call_ids() -> set[str]:
+    return set(_live.keys())
+
+
 def avg_call_duration_sec() -> float:
     """Mean planned duration (seconds) for currently live calls."""
     if not _live:
