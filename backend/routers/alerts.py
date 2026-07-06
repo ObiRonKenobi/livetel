@@ -71,7 +71,7 @@ def get_alerts(db: Session = Depends(get_db)) -> list[AlertResponse]:
     return [
         AlertResponse(
             id=a.id,
-            time=a.timestamp.isoformat(),
+            time=a.timestamp.isoformat() + "Z",
             type=a.type,
             severity=a.severity,
             details=a.details,
@@ -116,7 +116,7 @@ def get_alert_context(alert_id: int, db: Session = Depends(get_db)) -> AlertCont
 
     alert_resp = AlertResponse(
         id=alert.id,
-        time=alert.timestamp.isoformat(),
+        time=alert.timestamp.isoformat() + "Z",
         type=alert.type,
         severity=alert.severity,
         details=alert.details,

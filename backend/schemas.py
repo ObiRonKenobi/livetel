@@ -30,6 +30,14 @@ class CdrResponse(BaseModel):
     alert_severity: str | None = None  # critical | warning when tied to an alert window
 
 
+class CdrListResponse(BaseModel):
+    items: list[CdrResponse]
+    page: int
+    page_size: int
+    total_pages: int
+    total_count: int
+
+
 class SipFlowResponse(BaseModel):
     call_id: str
     events: list[CdrResponse]

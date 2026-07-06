@@ -88,8 +88,15 @@ function mosStatus(mos) {
   return 'bad'
 }
 
+function parseApiTime(isoString) {
+  if (!isoString) return new Date(NaN)
+  if (isoString.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(isoString)) return new Date(isoString)
+  return new Date(`${isoString}Z`)
+}
+
 function formatRelativeTime(isoString) {
-  const diff = Date.now() - new Date(isoString).getTime()
+  const diff = Date.now() - parseApiTime(isoString).getTime()
+  if (diff < 0) return 'just now'
   const mins = Math.floor(diff / 60000)
   if (mins < 1) return 'just now'
   if (mins < 60) return `${mins}m ago`
@@ -97,7 +104,19 @@ function formatRelativeTime(isoString) {
 }
 
 function formatTime(isoString) {
-  return new Date(isoString).toLocaleTimeString()
+  return parseApiTime(isoString).toLocaleTimeString()
+}
+
+function formatAlertTime(isoString) {
+  const d = parseApiTime(isoString)
+  if (Number.isNaN(d.getTime())) return '—'
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })
+  }
+  return d.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit',
+  })
 }
 
 function MetricChart({ title, dataKey, color, data, unit = '' }) {
@@ -152,7 +171,7 @@ function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
           {sev}
         </span>
         {unread && <span className="text-[10px] bg-white/10 text-white px-1.5 rounded">NEW</span>}
-        <span className="text-xs text-gray-500">{formatRelativeTime(alert.time)}</span>
+        <span className="text-xs text-gray-500 tabular-nums" title={formatAlertTime(alert.time)}>{formatAlertTime(alert.time)}</span>
         <span className={`text-xs font-bold uppercase ${st.text}`}>{alertTypeLabel(alert.type)}</span>
       </div>
       <p className={`text-gray-200 leading-relaxed whitespace-pre-wrap ${prominent ? 'text-sm md:text-base' : 'text-sm line-clamp-4'}`}>
@@ -197,7 +216,7 @@ function AlertTicker({ alerts, unreadIds, onAlertClick }) {
                 <span className={`font-bold uppercase text-xs px-1.5 rounded ${st.badge}`}>{severityFor(alert)}</span>
                 <span className={`font-bold uppercase text-xs ${st.text}`}>{alertTypeLabel(alert.type)}</span>
                 <span className="text-gray-400 max-w-sm truncate">{alert.details.slice(0, 70)}…</span>
-                <span className="text-gray-600 text-xs">{formatRelativeTime(alert.time)}</span>
+                <span className="text-gray-600 text-xs tabular-nums">{formatAlertTime(alert.time)}</span>
                 <span className="text-border">|</span>
               </span>
             )
@@ -316,7 +335,7 @@ function AlertDetailModal({ alert, onClose, onDismiss }) {
       {ctx && (
         <div className="space-y-5">
           <div className={`p-4 rounded-lg border-l-4 ${st.border} bg-darkBg`}>
-            <span className={`text-xs font-bold uppercase ${st.text}`}>{ctx.alert.severity} · {formatRelativeTime(ctx.alert.time)}</span>
+            <span className={`text-xs font-bold uppercase ${st.text}`}>{ctx.alert.severity} · {formatAlertTime(ctx.alert.time)}</span>
             <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap">{ctx.alert.details}</p>
           </div>
           <div>
@@ -397,35 +416,41 @@ function CdrAlertIcon({ severity }) {
 
 function CdrStreamTab({ search, setSearch, onSelectCall }) {
   const [cdrs, setCdrs] = useState([])
+  const [page, setPage] = useState(1)
+  const [cdrMeta, setCdrMeta] = useState({ total_pages: 1, total_count: 0 })
   const scrollRef = useRef(null)
-  const pinnedRef = useRef(false)
   const searching = search.trim().length > 0
 
   useEffect(() => {
-    pinnedRef.current = false
+    setPage(1)
     if (scrollRef.current) scrollRef.current.scrollTop = 0
   }, [search])
 
   useEffect(() => {
     const fetchCdrs = async () => {
       try {
-        const params = new URLSearchParams({ limit: searching ? '500' : '200' })
+        const params = new URLSearchParams({ page: String(page), page_size: '200' })
         if (searching) params.set('search', search.trim())
         const res = await fetch(`${CDRS_URL}?${params}`)
         const data = await res.json()
-        if (searching || !pinnedRef.current) setCdrs(data)
+        setCdrs(data.items || [])
+        setCdrMeta({
+          total_pages: data.total_pages || 1,
+          total_count: data.total_count || 0,
+        })
       } catch { /* keep */ }
     }
     fetchCdrs()
-    const id = setInterval(fetchCdrs, searching ? 5000 : 3000)
-    return () => clearInterval(id)
-  }, [search, searching])
-
-  const onScroll = useCallback(() => {
-    if (scrollRef.current && !searching) {
-      pinnedRef.current = scrollRef.current.scrollTop > 80
+    if (page === 1 && !searching) {
+      const id = setInterval(fetchCdrs, 3000)
+      return () => clearInterval(id)
     }
-  }, [searching])
+  }, [search, searching, page])
+
+  const goPage = (p) => {
+    setPage(p)
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }
 
   return (
     <div className="space-y-4">
@@ -438,16 +463,16 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
           className="flex-1 bg-darkBg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-vibrantBlue"
         />
         <span className="text-xs text-gray-500 shrink-0">
-          {searching
-            ? `${cdrs.length} matching event${cdrs.length === 1 ? '' : 's'}`
-            : `${cdrs.length} events · scroll down to freeze · scroll to top for live`}
+          Page {page}/{cdrMeta.total_pages}
+          {' · '}{cdrMeta.total_count.toLocaleString()} events
+          {searching ? ' (filtered)' : ''}
           {' · '}
           <span className="text-green-400">●</span> active
           <span className="text-gray-600"> ●</span> completed
         </span>
       </div>
       <div className="bg-panel border border-border rounded-lg overflow-hidden">
-        <div ref={scrollRef} onScroll={onScroll} className="overflow-x-auto max-h-[calc(100vh-280px)] overflow-y-auto">
+        <div ref={scrollRef} className="overflow-x-auto max-h-[calc(100vh-320px)] overflow-y-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-panel border-b border-border text-left text-xs uppercase tracking-wide text-gray-500">
               <tr>
@@ -488,6 +513,39 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
             </tbody>
           </table>
         </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <button
+          type="button"
+          disabled={page <= 1}
+          onClick={() => goPage(page - 1)}
+          className="px-3 py-1.5 text-xs rounded border border-border text-gray-400 disabled:opacity-30 hover:border-vibrantBlue hover:text-vibrantBlue"
+        >
+          ← Prev
+        </button>
+        {Array.from({ length: cdrMeta.total_pages }, (_, i) => i + 1).map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => goPage(p)}
+            className={`min-w-[2rem] px-2 py-1.5 text-xs rounded border tabular-nums ${
+              p === page
+                ? 'border-vibrantBlue bg-vibrantBlue/20 text-vibrantBlue font-bold'
+                : 'border-border text-gray-500 hover:border-vibrantBlue hover:text-vibrantBlue'
+            }`}
+          >
+            {p}
+          </button>
+        ))}
+        <button
+          type="button"
+          disabled={page >= cdrMeta.total_pages}
+          onClick={() => goPage(page + 1)}
+          className="px-3 py-1.5 text-xs rounded border border-border text-gray-400 disabled:opacity-30 hover:border-vibrantBlue hover:text-vibrantBlue"
+        >
+          Next →
+        </button>
+        <span className="text-[10px] text-gray-600 w-full text-center">200 events per page · up to 10 pages (2,000 records)</span>
       </div>
     </div>
   )

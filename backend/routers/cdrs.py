@@ -8,10 +8,13 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_db
 from models import Alert, CDR
-from schemas import CdrResponse, SipFlowResponse
+from schemas import CdrListResponse, CdrResponse, SipFlowResponse
 from services.generator import active_call_ids
 
 router = APIRouter(prefix="/api", tags=["cdrs"])
+
+MAX_CDR_PAGES = 10
+CDR_PAGE_SIZE = 200
 
 _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
 
@@ -34,7 +37,7 @@ def _cdr_to_response(
 ) -> CdrResponse:
     return CdrResponse(
         id=r.id,
-        time=r.timestamp.isoformat(),
+        time=r.timestamp.isoformat() + "Z",
         call_id=r.call_id,
         direction=r.direction,
         sip_method=r.sip_method,
@@ -163,45 +166,38 @@ def _resolve_alert_severity(
     return inherited
 
 
-@router.get("/cdrs", response_model=list[CdrResponse])
+@router.get("/cdrs", response_model=CdrListResponse)
 def get_cdrs(
     db: Session = Depends(get_db),
     search: str = Query(default="", max_length=100),
-    limit: int = Query(default=150, ge=1, le=500),
-    before_id: int | None = Query(default=None),
-) -> list[CdrResponse]:
+    page: int = Query(default=1, ge=1, le=MAX_CDR_PAGES),
+    page_size: int = Query(default=CDR_PAGE_SIZE, ge=1, le=CDR_PAGE_SIZE),
+) -> CdrListResponse:
     cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
     query = db.query(CDR).filter(CDR.timestamp >= cutoff)
-
-    if before_id is not None:
-        query = query.filter(CDR.id < before_id)
 
     term = search.strip()
     if term:
         if _is_call_id_search(term):
             query = query.filter(CDR.call_id.ilike(f"{term.lower()}%"))
-            limit = max(limit, 500)
         else:
             query = query.filter(_search_clause(term))
-            limit = max(limit, 300)
-        rows = query.order_by(CDR.id.desc()).limit(limit).all()
-    else:
-        recent = query.order_by(CDR.id.desc()).limit(limit).all()
-        alert_rows = _fetch_alert_correlated_cdrs(db, cutoff)
-        merged: dict[int, CDR] = {r.id: r for r in recent}
-        for r in alert_rows:
-            merged[r.id] = r
-        rows = sorted(merged.values(), key=lambda r: r.id, reverse=True)[:500]
 
-    if not rows:
-        return []
+    total_in_db = query.count()
+    max_browsable = page_size * MAX_CDR_PAGES
+    total_count = min(total_in_db, max_browsable)
+    total_pages = max(1, min(MAX_CDR_PAGES, (total_in_db + page_size - 1) // page_size))
+    safe_page = min(page, total_pages)
+    offset = (safe_page - 1) * page_size
+
+    rows = query.order_by(CDR.id.desc()).offset(offset).limit(page_size).all()
 
     call_ids = {r.call_id for r in rows}
     status_map = _build_call_status_map(call_ids)
     windows = _alert_windows(db)
     alert_by_call = _alert_severity_by_call_id(db, cutoff, windows)
 
-    return [
+    items = [
         _cdr_to_response(
             r,
             call_status=status_map.get(r.call_id, "completed"),
@@ -209,6 +205,14 @@ def get_cdrs(
         )
         for r in rows
     ]
+
+    return CdrListResponse(
+        items=items,
+        page=safe_page,
+        page_size=page_size,
+        total_pages=total_pages,
+        total_count=total_count,
+    )
 
 
 @router.get("/calls/{call_id}", response_model=SipFlowResponse)
