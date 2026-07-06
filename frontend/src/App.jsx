@@ -8,6 +8,9 @@ const METRICS_URL = '/api/metrics'
 const ALERTS_URL = '/api/alerts'
 const ALERT_STATS_URL = '/api/alerts/stats'
 const CDRS_URL = '/api/cdrs'
+const CDR_PAGE_SIZE = 100
+const CDR_MAX_PAGES = 10
+const CDR_BROWSE_MAX = CDR_PAGE_SIZE * CDR_MAX_PAGES
 const HISTORY_LIMIT = 60
 const READ_KEY = 'livetel-read-alert-ids'
 const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -422,7 +425,7 @@ function CdrAlertIcon({ severity }) {
 function CdrStreamTab({ search, setSearch, onSelectCall }) {
   const [cdrs, setCdrs] = useState([])
   const [page, setPage] = useState(1)
-  const [cdrMeta, setCdrMeta] = useState({ total_pages: 1, total_count: 0 })
+  const [cdrMeta, setCdrMeta] = useState({ total_pages: CDR_MAX_PAGES, total_count: 0, page_size: CDR_PAGE_SIZE })
   const scrollRef = useRef(null)
   const searching = search.trim().length > 0
 
@@ -434,14 +437,16 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
   useEffect(() => {
     const fetchCdrs = async () => {
       try {
-        const params = new URLSearchParams({ page: String(page), page_size: '100' })
+        const params = new URLSearchParams({ page: String(page), page_size: String(CDR_PAGE_SIZE) })
         if (searching) params.set('search', search.trim())
         const res = await fetch(`${CDRS_URL}?${params}`)
         const data = await res.json()
-        setCdrs(data.items || [])
+        const items = Array.isArray(data) ? data : (data.items || [])
+        setCdrs(items)
         setCdrMeta({
-          total_pages: data.total_pages || 1,
-          total_count: data.total_count || 0,
+          total_pages: data.total_pages ?? CDR_MAX_PAGES,
+          total_count: data.total_count ?? 0,
+          page_size: data.page_size ?? CDR_PAGE_SIZE,
         })
       } catch { /* keep */ }
     }
@@ -467,22 +472,26 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 bg-darkBg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-vibrantBlue"
         />
-        <span className="text-xs text-gray-500 shrink-0">
-          Page {page}/{cdrMeta.total_pages}
-          {' · '}{cdrMeta.total_count.toLocaleString()} events
-          {searching ? ' (filtered)' : ''}
-          {' · '}
-          <span className="text-green-400">●</span> active
-          <span className="text-gray-600"> ●</span> completed
+        <span className="text-xs text-gray-500 shrink-0 text-right">
+          Page {page} of {CDR_MAX_PAGES}
+          {' · '}{cdrs.length} of {CDR_PAGE_SIZE} on this page
+          {' · '}{searching ? `${cdrMeta.total_count.toLocaleString()} matches` : `${CDR_BROWSE_MAX.toLocaleString()} record window`}
         </span>
       </div>
+      <p className="text-[10px] text-gray-600">
+        <span className="text-green-400">●</span> active call
+        <span className="mx-2">·</span>
+        <span className="text-gray-500">●</span> completed
+        <span className="mx-2">·</span>
+        <span className="text-neonRed">▲</span> alert-correlated row
+      </p>
       <div className="bg-panel border border-border rounded-lg overflow-hidden">
         <div ref={scrollRef} className="overflow-x-auto max-h-[calc(100vh-320px)] overflow-y-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-panel border-b border-border text-left text-xs uppercase tracking-wide text-gray-500">
               <tr>
-                <th className="px-2 py-3 w-8" title="Call status">●</th>
-                <th className="px-2 py-3 w-8" title="Alert">!</th>
+                <th className="px-2 py-3 w-10" title="Call status">St</th>
+                <th className="px-2 py-3 w-10" title="Alert">!</th>
                 <th className="px-3 py-3">Time</th>
                 <th className="px-3 py-3">Call ID</th>
                 <th className="px-3 py-3">Dir</th>
@@ -528,7 +537,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
         >
           ← Prev
         </button>
-        {Array.from({ length: cdrMeta.total_pages }, (_, i) => i + 1).map((p) => (
+        {Array.from({ length: CDR_MAX_PAGES }, (_, i) => i + 1).map((p) => (
           <button
             key={p}
             type="button"
@@ -544,13 +553,15 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
         ))}
         <button
           type="button"
-          disabled={page >= cdrMeta.total_pages}
+          disabled={page >= CDR_MAX_PAGES}
           onClick={() => goPage(page + 1)}
           className="px-3 py-1.5 text-xs rounded border border-border text-gray-400 disabled:opacity-30 hover:border-vibrantBlue hover:text-vibrantBlue"
         >
           Next →
         </button>
-        <span className="text-[10px] text-gray-600 w-full text-center">100 events per page · 10 pages (1,000 records)</span>
+        <span className="text-[10px] text-gray-600 w-full text-center">
+          {CDR_PAGE_SIZE} events per page · {CDR_MAX_PAGES} pages · {CDR_BROWSE_MAX.toLocaleString()} records total
+        </span>
       </div>
     </div>
   )

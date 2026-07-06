@@ -186,8 +186,8 @@ def get_cdrs(
     total_in_db = query.count()
     max_browsable = page_size * MAX_CDR_PAGES
     total_count = min(total_in_db, max_browsable)
-    total_pages = max(1, min(MAX_CDR_PAGES, (total_in_db + page_size - 1) // page_size))
-    safe_page = min(page, total_pages)
+    total_pages = MAX_CDR_PAGES
+    safe_page = min(max(1, page), MAX_CDR_PAGES)
     offset = (safe_page - 1) * page_size
 
     rows = query.order_by(CDR.id.desc()).offset(offset).limit(page_size).all()
