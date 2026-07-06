@@ -1,8 +1,8 @@
 # LiveTel — AI-Powered VoIP Operations Demo
 
 > **Project started:** July 5, 2026  
-> **Status:** Application code complete — ready for Oracle VM deployment  
-> **Live demo:** _Deploy using [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)_ → `http://<oracle-vm-ip>`  
+> **Status:** Live on Oracle Cloud Free Tier  
+> **Live demo:** http://129.213.54.237  
 > **Repository:** [github.com/ObiRonKenobi/livetel](https://github.com/ObiRonKenobi/livetel)
 
 ---
