@@ -3,25 +3,40 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from config import settings
 from database import get_db
 from models import Alert, CDR
 from routers.cdrs import _cdr_to_response
-from schemas import AlertContextResponse, AlertResponse, DismissAlertRequest
+from schemas import AlertContextResponse, AlertResponse, AlertStatsResponse, DismissAlertRequest
 from services.anomalies import ANOMALIES
 from services.template_analysis import template_mitigation, template_root_cause
 
 router = APIRouter(prefix="/api", tags=["alerts"])
 
 VALID_DISMISS = frozenset({"false_positive", "resolved"})
+ALERT_WINDOW_HOURS = 24
+
+
+def _alert_cutoff() -> datetime:
+    return datetime.utcnow() - timedelta(hours=ALERT_WINDOW_HOURS)
+
+
+@router.get("/alerts/stats", response_model=AlertStatsResponse)
+def get_alert_stats(db: Session = Depends(get_db)) -> AlertStatsResponse:
+    cutoff = _alert_cutoff()
+    base = db.query(Alert).filter(Alert.timestamp >= cutoff)
+    return AlertStatsResponse(
+        open=base.filter(Alert.dismissed_status.is_(None)).count(),
+        false_positive=base.filter(Alert.dismissed_status == "false_positive").count(),
+        resolved=base.filter(Alert.dismissed_status == "resolved").count(),
+        window_hours=ALERT_WINDOW_HOURS,
+    )
 
 
 @router.get("/alerts", response_model=list[AlertResponse])
 def get_alerts(db: Session = Depends(get_db)) -> list[AlertResponse]:
-    cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
     alerts = (
         db.query(Alert)
-        .filter(Alert.timestamp >= cutoff, Alert.dismissed_status.is_(None))
+        .filter(Alert.timestamp >= _alert_cutoff(), Alert.dismissed_status.is_(None))
         .order_by(Alert.timestamp.desc())
         .limit(100)
         .all()

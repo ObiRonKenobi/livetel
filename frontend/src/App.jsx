@@ -5,6 +5,7 @@ import {
 
 const METRICS_URL = '/api/metrics'
 const ALERTS_URL = '/api/alerts'
+const ALERT_STATS_URL = '/api/alerts/stats'
 const CDRS_URL = '/api/cdrs'
 const HISTORY_LIMIT = 60
 const READ_KEY = 'livetel-read-alert-ids'
@@ -174,17 +175,60 @@ function AlertTicker({ alerts, unreadIds, onAlertClick }) {
   )
 }
 
+function AlertStatsBar({ stats }) {
+  return (
+    <div className="grid grid-cols-3 gap-3 mb-4">
+      {[
+        { label: 'Open', value: stats.open, color: 'text-neonRed', bg: 'bg-neonRed/10 border-neonRed/30' },
+        { label: 'Resolved', value: stats.resolved, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/30' },
+        { label: 'False positives', value: stats.false_positive, color: 'text-gray-400', bg: 'bg-gray-500/10 border-gray-500/30' },
+      ].map(({ label, value, color, bg }) => (
+        <div key={label} className={`rounded-lg border px-4 py-3 ${bg}`}>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wide">Last 24h · {label}</p>
+          <p className={`text-2xl font-bold tabular-nums ${color}`}>{value}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const SIP_CODE_LABELS = {
+  100: 'Trying',
+  180: 'Ringing',
+  200: 'OK',
+  202: 'Accepted',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  408: 'Timeout',
+  503: 'Unavailable',
+}
+
 function CompactSipCodes({ errorCodes }) {
-  const entries = Object.entries(errorCodes || {})
+  const entries = Object.entries(errorCodes || {}).sort(([a], [b]) => Number(a) - Number(b))
   if (!entries.length) return null
   return (
-    <div className="bg-panel border border-border rounded-lg px-4 py-3 flex flex-wrap items-center gap-3">
-      <span className="text-xs text-gray-500 uppercase tracking-wide shrink-0">SIP (60s)</span>
-      {entries.map(([code, count]) => (
-        <span key={code} className={`text-xs font-mono px-2 py-1 rounded ${Number(code) >= 400 ? 'bg-neonRed/20 text-neonRed' : 'bg-vibrantBlue/10 text-vibrantBlue'}`}>
-          {code}: {count}
-        </span>
-      ))}
+    <div
+      className="bg-panel border border-border rounded-lg px-4 py-3"
+      title="Count of each SIP response code in signaling events from the last 60 seconds"
+    >
+      <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">
+        SIP response codes · last 60 seconds
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        {entries.map(([code, count]) => {
+          const n = Number(code)
+          const label = SIP_CODE_LABELS[n] || 'Response'
+          return (
+            <span
+              key={code}
+              className={`text-xs font-mono px-2 py-1 rounded ${n >= 400 ? 'bg-neonRed/20 text-neonRed' : 'bg-vibrantBlue/10 text-vibrantBlue'}`}
+              title={`${code} ${label}`}
+            >
+              {code} {label}: {count}
+            </span>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -376,6 +420,7 @@ export default function App() {
   const [tab, setTab] = useState('overview')
   const [metrics, setMetrics] = useState({ active_calls: 0, avg_latency: 0, avg_jitter: 0, avg_packet_loss: 0, avg_mos: 0, error_codes: {} })
   const [alerts, setAlerts] = useState([])
+  const [alertStats, setAlertStats] = useState({ open: 0, false_positive: 0, resolved: 0, window_hours: 24 })
   const [cdrSearch, setCdrSearch] = useState('')
   const [history, setHistory] = useState([])
   const [readIds, setReadIds] = useState(() => loadReadIds())
@@ -410,6 +455,12 @@ export default function App() {
         body: JSON.stringify({ status }),
       })
       setAlerts((prev) => prev.filter((a) => a.id !== id))
+      setAlertStats((prev) => ({
+        ...prev,
+        open: Math.max(0, prev.open - 1),
+        false_positive: status === 'false_positive' ? prev.false_positive + 1 : prev.false_positive,
+        resolved: status === 'resolved' ? prev.resolved + 1 : prev.resolved,
+      }))
       markRead(id)
     } catch { /* keep */ }
   }, [markRead])
@@ -440,8 +491,12 @@ export default function App() {
 
     const fetchAlerts = async () => {
       try {
-        const res = await fetch(ALERTS_URL)
-        setAlerts(await res.json())
+        const [alertsRes, statsRes] = await Promise.all([
+          fetch(ALERTS_URL),
+          fetch(ALERT_STATS_URL),
+        ])
+        setAlerts(await alertsRes.json())
+        setAlertStats(await statsRes.json())
       } catch { /* keep */ }
     }
 
@@ -539,19 +594,22 @@ export default function App() {
       )}
 
       {tab === 'alerts' && (
-        <div className="space-y-3 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
-          {alerts.length === 0 && <p className="text-gray-500 text-center py-12">No alerts yet.</p>}
-          {alerts.map((alert) => (
-            <AlertCard
-              key={alert.id}
-              alert={alert}
-              prominent
-              unread={!readIds.has(alert.id)}
-              onOpenDetail={openAlertDetail}
-              onDismiss={dismissAlert}
-            />
-          ))}
-        </div>
+        <>
+          <AlertStatsBar stats={alertStats} />
+          <div className="space-y-3 max-h-[calc(100vh-320px)] overflow-y-auto pr-1">
+            {alerts.length === 0 && <p className="text-gray-500 text-center py-12">No open alerts in the last 24 hours.</p>}
+            {alerts.map((alert) => (
+              <AlertCard
+                key={alert.id}
+                alert={alert}
+                prominent
+                unread={!readIds.has(alert.id)}
+                onOpenDetail={openAlertDetail}
+                onDismiss={dismissAlert}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       {tab === 'cdr' && (

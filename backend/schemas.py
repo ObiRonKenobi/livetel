@@ -45,6 +45,13 @@ class DismissAlertRequest(BaseModel):
     status: str  # false_positive | resolved
 
 
+class AlertStatsResponse(BaseModel):
+    open: int
+    false_positive: int
+    resolved: int
+    window_hours: int = 24
+
+
 class AlertContextResponse(BaseModel):
     alert: AlertResponse
     related_events: list[CdrResponse]
