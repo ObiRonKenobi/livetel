@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import SessionLocal
 from models import Alert, CDR
+from services.anomalies import ANOMALIES
 from services.template_analysis import template_analysis
 
 logger = logging.getLogger(__name__)
@@ -21,23 +22,58 @@ def _recent_cdrs(session: Session, window_seconds: int) -> list[CDR]:
 
 def _aggregate(recent: list[CDR]) -> dict[str, float]:
     count = len(recent)
+    if count == 0:
+        return {}
     error_count = sum(1 for c in recent if c.sip_code >= 400)
+    auth_count = sum(1 for c in recent if c.sip_code in (401, 403))
+    timeout_count = sum(1 for c in recent if c.sip_code == 408)
+    exhaust_count = sum(1 for c in recent if c.sip_code == 503)
+    fraud_count = sum(1 for c in recent if "premium-route.xyz" in c.to_uri or "premium-route.xyz" in c.from_uri)
+    intl_count = sum(1 for c in recent if any(p in c.to_uri for p in ("+447", "+491", "+331", "+813", "+861", "+234")))
     return {
         "avg_latency": sum(c.latency for c in recent) / count,
         "avg_jitter": sum(c.jitter for c in recent) / count,
         "avg_packet_loss": sum(c.packet_loss for c in recent) / count,
+        "avg_mos": sum(c.mos for c in recent) / count,
         "sip_error_rate": (error_count / count) * 100,
-        "unusual_dest_ratio": sum(1 for c in recent if c.dst.startswith("XYZ")) / count,
+        "auth_rate": (auth_count / count) * 100,
+        "timeout_rate": (timeout_count / count) * 100,
+        "exhaust_503_rate": (exhaust_count / count) * 100,
+        "fraud_ratio": fraud_count / count,
+        "intl_ratio": intl_count / count,
     }
 
 
 def _detect_anomaly(data: dict[str, float]) -> str | None:
+    """Return highest-severity matching anomaly key."""
+    critical: list[str] = []
+    warning: list[str] = []
+
+    if data["exhaust_503_rate"] > 0.15 or (data["sip_error_rate"] > 35 and data["exhaust_503_rate"] > 0.08):
+        critical.append("trunk_exhaustion")
+    if data["sip_error_rate"] > 30 and data["exhaust_503_rate"] <= 0.15:
+        critical.append("carrier_outage")
+    if data["auth_rate"] > 12:
+        critical.append("auth_failure")
+    if data["fraud_ratio"] > 0.12:
+        critical.append("toll_fraud")
+    if data["timeout_rate"] > 18:
+        warning.append("dns_sip_failure")
+    if data["avg_packet_loss"] > 8:
+        warning.append("one_way_audio")
     if data["avg_latency"] > 200 or data["avg_packet_loss"] > 5:
-        return "congestion"
-    if data["sip_error_rate"] > 30:
-        return "carrier_outage"
-    if data["unusual_dest_ratio"] > 0.2:
-        return "toll_fraud"
+        warning.append("congestion")
+    elif data["avg_latency"] > 140:
+        warning.append("latency_spike")
+    if data["avg_mos"] < 2.8 and data["avg_mos"] > 0:
+        warning.append("mos_degradation")
+    if data["intl_ratio"] > 0.25:
+        warning.append("suspicious_international")
+
+    if critical:
+        return critical[0]
+    if warning:
+        return warning[0]
     return None
 
 
@@ -71,9 +107,11 @@ def monitor_and_alert() -> None:
         if not anomaly or not _should_emit_ai_alert(anomaly):
             return
 
+        severity = ANOMALIES[anomaly].severity if anomaly in ANOMALIES else "warning"
+
         if settings.use_template_ai:
             ai_text = template_analysis(anomaly, data)
-            session.add(Alert(type=f"AI_{anomaly}", details=ai_text))
+            session.add(Alert(type=f"AI_{anomaly}", severity=severity, details=ai_text))
             session.commit()
             logger.info("Template AI alert created for %s", anomaly)
             return
@@ -83,18 +121,16 @@ def monitor_and_alert() -> None:
 - Avg jitter: {data['avg_jitter']:.1f} ms
 - Avg packet loss: {data['avg_packet_loss']:.2f}%
 - SIP error rate: {data['sip_error_rate']:.1f}%
-- Unusual destination call ratio: {data['unusual_dest_ratio']:.2%}
 
 Explain the root cause and suggest immediate mitigation steps. Keep response under 200 words."""
 
         try:
             ai_text = _call_ollama(prompt)
-            session.add(Alert(type=f"AI_{anomaly}", details=ai_text))
+            session.add(Alert(type=f"AI_{anomaly}", severity=severity, details=ai_text))
             session.commit()
-            logger.info("AI alert created for %s", anomaly)
         except Exception as exc:
             logger.exception("Ollama call failed")
-            session.add(Alert(type="AI_error", details=str(exc)))
+            session.add(Alert(type="AI_error", severity="critical", details=str(exc)))
             session.commit()
 
 

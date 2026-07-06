@@ -13,14 +13,18 @@ class CDR(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    src: Mapped[str] = mapped_column(String)
-    dst: Mapped[str] = mapped_column(String)
-    duration: Mapped[int] = mapped_column(Integer)
+    call_id: Mapped[str] = mapped_column(String, index=True)
+    direction: Mapped[str] = mapped_column(String)  # inbound | outbound
+    sip_method: Mapped[str] = mapped_column(String)  # INVITE, BYE, REFER, etc.
+    from_uri: Mapped[str] = mapped_column(String)
+    to_uri: Mapped[str] = mapped_column(String)
+    duration: Mapped[int] = mapped_column(Integer, default=0)
     mos: Mapped[float] = mapped_column(Float)
     latency: Mapped[float] = mapped_column(Float)
     jitter: Mapped[float] = mapped_column(Float)
     packet_loss: Mapped[float] = mapped_column(Float)
     sip_code: Mapped[int] = mapped_column(Integer)
+    leg: Mapped[int] = mapped_column(Integer, default=1)
 
 
 class Alert(Base):
@@ -29,4 +33,5 @@ class Alert(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     type: Mapped[str] = mapped_column(String)
+    severity: Mapped[str] = mapped_column(String, default="warning")
     details: Mapped[str] = mapped_column(String)

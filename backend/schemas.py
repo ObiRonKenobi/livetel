@@ -11,21 +11,40 @@ class MetricsResponse(BaseModel):
 
 
 class CdrResponse(BaseModel):
+    id: int
     time: str
-    src: str
-    dst: str
+    call_id: str
+    direction: str
+    sip_method: str
+    from_uri: str
+    to_uri: str
     duration: int
     mos: float
     latency: float
     jitter: float
     packet_loss: float
     sip_code: int
+    leg: int
+
+
+class SipFlowResponse(BaseModel):
+    call_id: str
+    events: list[CdrResponse]
 
 
 class AlertResponse(BaseModel):
+    id: int
     time: str
     type: str
+    severity: str
     details: str
+
+
+class AlertContextResponse(BaseModel):
+    alert: AlertResponse
+    related_events: list[CdrResponse]
+    root_cause: str
+    mitigation: str
 
 
 class HealthResponse(BaseModel):

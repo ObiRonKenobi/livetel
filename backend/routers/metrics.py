@@ -26,17 +26,21 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
             error_codes={},
         )
 
+    established = [c for c in recent if c.sip_method == "INVITE" and c.sip_code == 200]
+    sample = established if established else recent
+
     error_codes: dict[str, int] = {}
     for cdr in recent:
         key = str(cdr.sip_code)
         error_codes[key] = error_codes.get(key, 0) + 1
 
-    count = len(recent)
+    count = len(sample)
+    active = len({c.call_id for c in established})
     return MetricsResponse(
-        active_calls=count,
-        avg_latency=round(sum(c.latency for c in recent) / count, 1),
-        avg_jitter=round(sum(c.jitter for c in recent) / count, 1),
-        avg_packet_loss=round(sum(c.packet_loss for c in recent) / count, 2),
-        avg_mos=round(sum(c.mos for c in recent) / count, 2),
+        active_calls=active,
+        avg_latency=round(sum(c.latency for c in sample) / count, 1),
+        avg_jitter=round(sum(c.jitter for c in sample) / count, 1),
+        avg_packet_loss=round(sum(c.packet_loss for c in sample) / count, 2),
+        avg_mos=round(sum(c.mos for c in sample) / count, 2),
         error_codes=error_codes,
     )

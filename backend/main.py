@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database import engine, get_db
+from database import engine, ensure_schema, get_db
 from models import Base
 from routers import alerts, cdrs, metrics
 from schemas import HealthResponse
@@ -23,7 +23,7 @@ scheduler = BackgroundScheduler()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    ensure_schema()
     scheduler.add_job(baseline_traffic, "interval", seconds=1, id="baseline_traffic")
     scheduler.add_job(inject_anomaly, "interval", minutes=5, id="inject_anomaly")
     scheduler.add_job(monitor_and_alert, "interval", seconds=30, id="monitor_and_alert")
