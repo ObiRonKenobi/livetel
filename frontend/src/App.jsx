@@ -316,7 +316,7 @@ function CallFlowModal({ callId, onClose }) {
   )
 }
 
-function AlertDetailModal({ alert, onClose, onDismiss }) {
+function AlertDetailModal({ alert, onClose, onDismiss, onSelectCall }) {
   const [ctx, setCtx] = useState(null)
   useEffect(() => {
     fetch(`/api/alerts/${alert.id}/context`).then((r) => r.json()).then(setCtx).catch(() => setCtx(null))
@@ -348,6 +348,7 @@ function AlertDetailModal({ alert, onClose, onDismiss }) {
           </div>
           <div>
             <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Correlated SIP Events ({ctx.related_events.length})</h3>
+            <p className="text-[10px] text-gray-500 mb-2">Click any row to view the full SIP call flow for that call ID.</p>
             <div className="max-h-64 overflow-y-auto border border-border rounded-lg">
               <table className="w-full text-xs font-mono">
                 <thead className="bg-darkBg text-gray-500 sticky top-0">
@@ -361,9 +362,13 @@ function AlertDetailModal({ alert, onClose, onDismiss }) {
                 </thead>
                 <tbody>
                   {ctx.related_events.map((r) => (
-                    <tr key={r.id} className="border-t border-border/50">
+                    <tr
+                      key={r.id}
+                      onClick={() => onSelectCall(r.call_id)}
+                      className="border-t border-border/50 cursor-pointer hover:bg-vibrantBlue/5"
+                    >
                       <td className="px-2 py-1 text-gray-500">{formatTime(r.time)}</td>
-                      <td className="px-2 py-1 text-vibrantBlue">{r.call_id.slice(0, 8)}…</td>
+                      <td className="px-2 py-1 text-vibrantBlue hover:underline">{r.call_id.slice(0, 8)}…</td>
                       <td className="px-2 py-1 text-center">{r.sip_method}</td>
                       <td className={`px-2 py-1 text-center ${r.sip_code >= 400 ? 'text-neonRed' : ''}`}>{r.sip_code}</td>
                       <td className="px-2 py-1 text-gray-400 truncate max-w-xs">{r.from_uri} → {r.to_uri}</td>
@@ -764,7 +769,14 @@ export default function App() {
         <CdrStreamTab search={cdrSearch} setSearch={setCdrSearch} onSelectCall={setSelectedCallId} />
       )}
 
-      {detailAlert && <AlertDetailModal alert={detailAlert} onClose={() => setDetailAlert(null)} onDismiss={dismissAlert} />}
+      {detailAlert && (
+        <AlertDetailModal
+          alert={detailAlert}
+          onClose={() => setDetailAlert(null)}
+          onDismiss={dismissAlert}
+          onSelectCall={setSelectedCallId}
+        />
+      )}
       {selectedCallId && <CallFlowModal callId={selectedCallId} onClose={() => setSelectedCallId(null)} />}
 
       <footer className="mt-8 text-center text-xs text-gray-600">Metrics & CDR 3s · SIP alerts 10s · 24h retention</footer>
