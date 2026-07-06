@@ -434,7 +434,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
   useEffect(() => {
     const fetchCdrs = async () => {
       try {
-        const params = new URLSearchParams({ page: String(page), page_size: '200' })
+        const params = new URLSearchParams({ page: String(page), page_size: '20' })
         if (searching) params.set('search', search.trim())
         const res = await fetch(`${CDRS_URL}?${params}`)
         const data = await res.json()
@@ -550,7 +550,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
         >
           Next →
         </button>
-        <span className="text-[10px] text-gray-600 w-full text-center">200 events per page · up to 10 pages (2,000 records)</span>
+        <span className="text-[10px] text-gray-600 w-full text-center">20 events per page · 5 pages (100 records)</span>
       </div>
     </div>
   )

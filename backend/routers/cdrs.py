@@ -13,8 +13,8 @@ from services.generator import active_call_ids
 
 router = APIRouter(prefix="/api", tags=["cdrs"])
 
-MAX_CDR_PAGES = 10
-CDR_PAGE_SIZE = 200
+MAX_CDR_PAGES = 5
+CDR_PAGE_SIZE = 20
 
 _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
 
