@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
+import LiveTelLogo from './LiveTelLogo'
 
 const METRICS_URL = '/api/metrics'
 const ALERTS_URL = '/api/alerts'
@@ -9,6 +10,7 @@ const ALERT_STATS_URL = '/api/alerts/stats'
 const CDRS_URL = '/api/cdrs'
 const HISTORY_LIMIT = 60
 const READ_KEY = 'livetel-read-alert-ids'
+const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
 
 const TABS = [
   { id: 'overview', label: 'Overview' },
@@ -32,6 +34,14 @@ function loadReadIds() {
 
 function saveReadIds(set) {
   localStorage.setItem(READ_KEY, JSON.stringify([...set]))
+}
+
+function withinAlertWindow(isoString) {
+  return Date.now() - new Date(isoString).getTime() < ALERT_WINDOW_MS
+}
+
+function filterRecentAlerts(list) {
+  return list.filter((a) => withinAlertWindow(a.time))
 }
 
 function severityFor(alert) {
@@ -144,8 +154,9 @@ function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
 }
 
 function AlertTicker({ alerts, unreadIds, onAlertClick }) {
-  const unread = alerts.filter((a) => !unreadIds.has(a.id))
-  const items = (unread.length ? unread : alerts).slice(0, 10)
+  const recent = filterRecentAlerts(alerts)
+  const unread = recent.filter((a) => !unreadIds.has(a.id))
+  const items = (unread.length ? unread : recent).slice(0, 10)
   if (items.length === 0) return null
   const doubled = [...items, ...items]
 
@@ -339,38 +350,48 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
   const [cdrs, setCdrs] = useState([])
   const scrollRef = useRef(null)
   const pinnedRef = useRef(false)
+  const searching = search.trim().length > 0
+
+  useEffect(() => {
+    pinnedRef.current = false
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [search])
 
   useEffect(() => {
     const fetchCdrs = async () => {
       try {
-        const params = new URLSearchParams({ limit: '200' })
-        if (search.trim()) params.set('search', search.trim())
+        const params = new URLSearchParams({ limit: searching ? '500' : '200' })
+        if (searching) params.set('search', search.trim())
         const res = await fetch(`${CDRS_URL}?${params}`)
         const data = await res.json()
-        if (!pinnedRef.current) setCdrs(data)
+        if (searching || !pinnedRef.current) setCdrs(data)
       } catch { /* keep */ }
     }
     fetchCdrs()
-    const id = setInterval(fetchCdrs, 3000)
+    const id = setInterval(fetchCdrs, searching ? 5000 : 3000)
     return () => clearInterval(id)
-  }, [search])
+  }, [search, searching])
 
   const onScroll = useCallback(() => {
-    if (scrollRef.current) pinnedRef.current = scrollRef.current.scrollTop > 80
-  }, [])
+    if (scrollRef.current && !searching) {
+      pinnedRef.current = scrollRef.current.scrollTop > 80
+    }
+  }, [searching])
 
   return (
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
         <input
           type="search"
-          placeholder="Filter call ID, URI, direction, SIP code…"
+          placeholder="Search call ID, IP, number (+ optional), direction, SIP method/code…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 bg-darkBg border border-border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-vibrantBlue"
         />
         <span className="text-xs text-gray-500 shrink-0">
-          {cdrs.length} events · scroll down to freeze view · scroll to top for live updates
+          {searching
+            ? `${cdrs.length} matching event${cdrs.length === 1 ? '' : 's'}`
+            : `${cdrs.length} events · scroll down to freeze · scroll to top for live`}
         </span>
       </div>
       <div className="bg-panel border border-border rounded-lg overflow-hidden">
@@ -495,7 +516,8 @@ export default function App() {
           fetch(ALERTS_URL),
           fetch(ALERT_STATS_URL),
         ])
-        setAlerts(await alertsRes.json())
+        const recent = filterRecentAlerts(await alertsRes.json())
+        setAlerts(recent)
         setAlertStats(await statsRes.json())
       } catch { /* keep */ }
     }
@@ -506,6 +528,15 @@ export default function App() {
     const b = setInterval(fetchAlerts, 10000)
     return () => { clearInterval(a); clearInterval(b) }
   }, [])
+
+  useEffect(() => {
+    setReadIds((prev) => {
+      const openIds = new Set(alerts.map((a) => a.id))
+      const next = new Set([...prev].filter((id) => openIds.has(id)))
+      if (next.size !== prev.size) saveReadIds(next)
+      return next
+    })
+  }, [alerts])
 
   useEffect(() => {
     if (unreadCount > prevUnread.current && prevUnread.current >= 0) {
@@ -528,9 +559,12 @@ export default function App() {
   return (
     <div className="min-h-screen bg-darkBg p-4 md:p-6">
       <header className="flex flex-col md:flex-row md:justify-between md:items-end gap-4 mb-4 border-b border-border pb-4">
-        <div>
-          <h1 className="text-3xl md:text-4xl font-bold text-vibrantBlue tracking-tight">LiveTel</h1>
-          <p className="text-gray-400 text-sm mt-1">AI-Powered VoIP Operations</p>
+        <div className="flex items-center gap-3">
+          <LiveTelLogo size={48} className="shrink-0" />
+          <div>
+            <h1 className="text-3xl md:text-4xl font-bold text-vibrantBlue tracking-tight">LiveTel</h1>
+            <p className="text-gray-400 text-sm mt-1">AI-Powered VoIP Operations</p>
+          </div>
         </div>
         <div className="text-right">
           <p className="text-xs text-gray-500 uppercase tracking-widest mb-1">Active Calls (live)</p>

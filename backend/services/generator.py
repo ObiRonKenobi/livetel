@@ -330,7 +330,7 @@ def inject_anomaly() -> None:
             Alert(
                 type=anomaly_key,
                 severity=meta.severity,
-                details=f"Injected {meta.label} burst — correlated SIP events in telemetry window.",
+                details=f"{meta.label} detected — correlated SIP events in telemetry window.",
             )
         )
         session.commit()
