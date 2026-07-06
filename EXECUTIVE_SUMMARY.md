@@ -1,7 +1,7 @@
 # LiveTel — Executive Summary
 
 **Project:** AI-Powered VoIP Operations Demo  
-**Author:** Engineering Team  
+**Author:** Ronald W. Sudol III  
 **Date:** July 5, 2026  
 **Live demo:** http://129.213.54.237  
 **Source:** https://github.com/ObiRonKenobi/livetel  
