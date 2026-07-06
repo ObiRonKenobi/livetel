@@ -59,6 +59,70 @@ This prototype was built to show leadership that AI-assisted engineering is not 
 
 ---
 
+## Synthetic SIP Traffic Framework
+
+Because a live demo cannot depend on a real PBX or carrier trunks, LiveTel includes a **purpose-built traffic simulator** (`backend/services/generator.py`) that was designed and implemented with AI-assisted coding in Cursor. It is the engine that makes the NOC feel real — without external call sources or per-minute telecom costs.
+
+### Architecture overview
+
+The simulator runs as **scheduled background jobs** inside the FastAPI backend (APScheduler):
+
+| Job | Interval | Module | Role |
+|-----|----------|--------|------|
+| `baseline_traffic` | Every **1 second** | `tick_live_calls()` | Advance live calls; emit SIP events; maintain 100–150 concurrent sessions |
+| `inject_anomaly` | Every **5 minutes** | `generate_call_session()` | Inject a burst of degraded calls + create a matching alert |
+| `monitor_and_alert` | Every **30 seconds** | `monitor.py` | Read generated CDRs; classify anomalies; write operator alerts |
+| `prune_old_data` | Every **15 minutes** | `pruning.py` | Drop records older than 24 hours |
+
+All synthetic events land in the **same SQLite database** the dashboard polls — there is no separate “demo mode” data path.
+
+### Live concurrent call model
+
+Each call is tracked in memory as a `LiveCall` object with a shared **16-character hex call ID** that ties every signaling event together:
+
+1. **INVITE** → `100 Trying` → `180 Ringing` → `200 OK` (answered)
+2. Optional **REFER** → `202 Accepted` → second-leg **INVITE** (call transfer, ~12% of normal calls)
+3. Optional **voicemail leg** — REFER to `voicemail@<IP>` (~8% of normal calls)
+4. **BYE** → `200 OK` when the call ends
+
+Calls are held **live** until `end_at` — the dashboard “Active Calls” counter reflects calls that have received `200 OK` but not yet `BYE`, not merely events in a rolling window.
+
+On startup the framework **seeds 110–130 in-progress calls** so the UI is immediately busy. Thereafter it starts 1–3 new calls per second when the pool drops below target, and tears down completed calls with a BYE.
+
+### Realistic SIP addressing
+
+The generator produces operator-credible URIs that mirror production CDR formats:
+
+| Direction | From | To |
+|-----------|------|-----|
+| **Inbound** | `1234567890@<random-IP>` | `1234567890@livetel.net` |
+| **Outbound** | `1234567890@livetel.net` | `+1…@<carrier-IP>` |
+
+Each row also carries **direction**, **SIP method**, **response code**, **leg number**, and QoS fields (**MOS**, **latency**, **jitter**, **RTP packet loss**) — the same columns a real SBC or softphone platform would export.
+
+### Controlled anomaly injection
+
+Every five minutes `inject_anomaly()` randomly selects one of **10 anomaly types** and writes **8–15 complete call sessions** with signatures tuned to trigger detection:
+
+- **SIP failures** — `401`, `403`, `408`, `503` on INVITE (auth, timeout, overload)
+- **QoS degradation** — elevated latency, jitter, packet loss, collapsed MOS
+- **Toll fraud** — destinations to `premium-route.xyz`
+- **International patterns** — unusual `+44`, `+49`, etc. prefixes on outbound legs
+
+An alert row is created in the same transaction, so the **Alerts tab**, **CDR stream icons**, and **correlated SIP evidence** modal always have data to show — even when no real network fault exists.
+
+### Why this framework matters for the demo
+
+1. **Zero external dependencies** — No SIP trunks, no softphone farm, no PCAP replay tools; one Python module drives the entire NOC  
+2. **Believable operator UX** — Live call counts, scrolling CDRs, clickable call flows, active/completed indicators, and alert correlation behave like production tooling  
+3. **Repeatable storytelling** — Anomalies fire on a schedule; leadership can watch the ticker, open an alert, and drill into SIP evidence in under a minute  
+4. **Feeds the AI layer** — The monitor reads the same synthetic telemetry that a real deployment would produce; template or LLM analysis plugs in without schema changes  
+5. **AI-accelerated build** — The state machine, URI rules, and scheduler wiring were implemented rapidly with Cursor; the framework itself is an example of AI shortening time-to-demo  
+
+In a production pilot, this generator would be **replaced or fed by real CDR ingest** (syslog, SBC export, or softphone gateway). The dashboard, detection rules, and AI analysis path remain unchanged — only the data source swaps out.
+
+---
+
 ## How the Code Detects Anomalies
 
 Detection is a **two-stage pipeline**: telemetry aggregation, then rule-based classification. This is deliberately simple and auditable — the same aggregated metrics feed either the template engine or an LLM.
@@ -128,7 +192,8 @@ The canned placeholder alerts are **not a limitation of the design** — they ar
 ## Key Benefits Demonstrated
 
 1. **AI-accelerated delivery** — Concept to live URL in days using AI for spec, plan, code, and deploy  
-2. **Faster incident response** — Alerts bundle metrics, root cause, mitigation, and SIP evidence in one click  
+2. **Synthetic traffic framework** — Self-contained SIP simulator drives 24/7 believable CDRs without real trunks  
+3. **Faster incident response** — Alerts bundle metrics, root cause, mitigation, and SIP evidence in one click  
 3. **SIP + softphone coverage** — Ten anomaly types spanning trunks, auth, RTP, codecs, and web softphone registration  
 4. **Zero API costs** — Local LLM path avoids per-incident cloud inference charges  
 5. **24/7 unattended operation** — systemd services, auto-restart, 24-hour data pruning  
