@@ -10,7 +10,7 @@ Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=USE_TEMPLATE_AI=true
-Environment=READ_ONLY_DEMO=true
+Environment=READ_ONLY_DEMO=false
 Environment=ENABLE_API_DOCS=false
 
 [Install]
