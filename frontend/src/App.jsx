@@ -582,20 +582,20 @@ function DrilldownModal({ stack, onClose, onBack, onPushCall, onDismissAlert, di
 function CallStatusIcon({ status }) {
   if (status === 'active') {
     return (
-      <span title="Call active" className="inline-flex items-center gap-1 text-green-400">
-        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse shrink-0" />
+      <span title="Call active" className="relative z-0 inline-flex items-center gap-1 text-green-400">
+        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse-dot shrink-0" />
       </span>
     )
   }
   if (status === 'failed') {
     return (
-      <span title="Call failed / disconnected" className="inline-flex items-center text-neonRed">
+      <span title="Call failed / disconnected" className="relative z-0 inline-flex items-center text-neonRed">
         <span className="w-2 h-2 rounded-full bg-neonRed shrink-0" />
       </span>
     )
   }
   return (
-    <span title="Call completed" className="inline-flex items-center">
+    <span title="Call completed" className="relative z-0 inline-flex items-center">
       <span className="w-2 h-2 rounded-full bg-gray-600 shrink-0" />
     </span>
   )
@@ -613,7 +613,7 @@ function CdrAlertIcon({ severity }) {
   )
 }
 
-function CdrStreamTab({ search, setSearch, onSelectCall }) {
+function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
   const [cdrs, setCdrs] = useState([])
   const [page, setPage] = useState(1)
   const [cdrMeta, setCdrMeta] = useState({ total_pages: CDR_MAX_PAGES, total_count: 0, page_size: CDR_PAGE_SIZE })
@@ -654,8 +654,8 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+    <div className={`flex flex-col min-h-0 gap-3 ${className}`}>
+      <div className="shrink-0 flex flex-col sm:flex-row sm:items-center gap-3">
         <input
           type="search"
           placeholder="Search call ID, IP, number (+ optional), direction, SIP method/code…"
@@ -669,7 +669,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
           {' · '}{searching ? `${cdrMeta.total_count.toLocaleString()} matches` : `${CDR_BROWSE_MAX.toLocaleString()} record window`}
         </span>
       </div>
-      <p className="text-[10px] text-gray-600">
+      <p className="shrink-0 text-[10px] text-gray-600">
         <span className="text-green-400">●</span> active call
         <span className="mx-2">·</span>
         <span className="text-gray-500">●</span> completed
@@ -678,24 +678,24 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
         <span className="mx-2">·</span>
         <span className="text-neonRed">▲</span> alert-correlated row
       </p>
-      <div className="bg-panel border border-border rounded-lg overflow-hidden">
-        <div ref={scrollRef} className="overflow-x-auto max-h-[calc(100vh-320px)] overflow-y-auto">
+      <div className="flex-1 min-h-0 flex flex-col bg-panel border border-border rounded-lg overflow-hidden">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
           <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-panel border-b border-border text-left text-xs uppercase tracking-wide text-gray-500">
-              <tr>
-                <th className="px-2 py-3 w-10" title="Call status">St</th>
-                <th className="px-2 py-3 w-10" title="Alert">!</th>
-                <th className="px-3 py-3">Time</th>
-                <th className="px-3 py-3">Call ID</th>
-                <th className="px-3 py-3">Dir</th>
-                <th className="px-3 py-3">Method</th>
-                <th className="px-3 py-3">From</th>
-                <th className="px-3 py-3">To</th>
-                <th className="px-3 py-3">Code</th>
-                <th className="px-3 py-3">MOS</th>
+            <thead className="sticky top-0 z-20 border-b border-border text-left text-xs uppercase tracking-wide text-gray-500">
+              <tr className="bg-panel">
+                <th className="sticky top-0 z-20 bg-panel px-2 py-3 w-10" title="Call status">St</th>
+                <th className="sticky top-0 z-20 bg-panel px-2 py-3 w-10" title="Alert">!</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">Time</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">Call ID</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">Dir</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">Method</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">From</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">To</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">Code</th>
+                <th className="sticky top-0 z-20 bg-panel px-3 py-3">MOS</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="relative z-0">
               {cdrs.length === 0 && (
                 <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-500">No events match.</td></tr>
               )}
@@ -721,7 +721,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
           </table>
         </div>
       </div>
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="shrink-0 flex flex-wrap items-center justify-center gap-2 pt-1">
         <button
           type="button"
           disabled={page <= 1}
@@ -909,8 +909,8 @@ export default function App() {
   const avgMins = metrics.avg_call_duration_sec ? Math.round(metrics.avg_call_duration_sec / 60) : 0
 
   return (
-    <div className="min-h-screen bg-darkBg p-4 md:p-6">
-      <header className="flex flex-col md:flex-row md:justify-between md:items-end gap-4 mb-4 border-b border-border pb-4">
+    <div className="h-full flex flex-col overflow-hidden bg-darkBg p-4 md:p-6">
+      <header className="shrink-0 flex flex-col md:flex-row md:justify-between md:items-end gap-4 mb-4 border-b border-border pb-4">
         <div className="flex items-stretch gap-3">
           <LiveTelLogo />
           <div className="flex flex-col justify-center">
@@ -927,7 +927,7 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="flex flex-wrap items-center gap-1 mb-4 border-b border-border">
+      <nav className="shrink-0 flex flex-wrap items-center gap-1 mb-4 border-b border-border">
         {TABS.map(({ id, label }) => (
           <button
             key={id}
@@ -952,8 +952,9 @@ export default function App() {
         )}
       </nav>
 
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
       {tab === 'overview' && (
-        <>
+        <div className="flex-1 min-h-0 overflow-y-auto pr-1">
           <AlertTicker alerts={alerts} unreadIds={readIds} onAlertClick={() => setTab('alerts')} />
           <CompactSipCodes errorCodes={metrics.error_codes} onCodeClick={(code) => openDrilldown({ type: 'sip-code', sipCode: code })} />
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
@@ -970,19 +971,19 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-2">
             <MetricChart title="Latency" dataKey="avg_latency" color="#00d4ff" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
             <MetricChart title="Jitter" dataKey="avg_jitter" color="#a78bfa" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
             <MetricChart title="Packet Loss" dataKey="avg_packet_loss" color="#ff073a" data={history} unit={`% · last ${CHART_HISTORY_MINUTES} min`} />
             <MetricChart title="MOS Score" dataKey="avg_mos" color="#34d399" data={history} unit={`last ${CHART_HISTORY_MINUTES} min`} />
           </div>
-        </>
+        </div>
       )}
 
       {tab === 'alerts' && (
-        <>
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden gap-3">
           <AlertStatsBar stats={alertStats} />
-          <div className="space-y-3 max-h-[calc(100vh-320px)] overflow-y-auto pr-1">
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
             {alerts.length === 0 && <p className="text-gray-500 text-center py-12">No open alerts in the last 24 hours.</p>}
             {alerts.map((alert) => (
               <AlertCard
@@ -996,12 +997,13 @@ export default function App() {
               />
             ))}
           </div>
-        </>
+        </div>
       )}
 
       {tab === 'cdr' && (
-        <CdrStreamTab search={cdrSearch} setSearch={setCdrSearch} onSelectCall={(callId) => openDrilldown({ type: 'call', callId })} />
+        <CdrStreamTab className="flex-1 min-h-0" search={cdrSearch} setSearch={setCdrSearch} onSelectCall={(callId) => openDrilldown({ type: 'call', callId })} />
       )}
+      </div>
 
       <DrilldownModal
         stack={drilldownStack}
@@ -1012,7 +1014,7 @@ export default function App() {
         dismissEnabled={!readOnly}
       />
 
-      <footer className="mt-8 text-center text-xs text-gray-600">Metrics {POLL_METRICS_MS / 1000}s · CDR {POLL_CDR_MS / 1000}s · Alerts {POLL_ALERTS_MS / 1000}s · 24h retention</footer>
+      <footer className="shrink-0 pt-2 text-center text-xs text-gray-600">Metrics {POLL_METRICS_MS / 1000}s · CDR {POLL_CDR_MS / 1000}s · Alerts {POLL_ALERTS_MS / 1000}s · 24h retention</footer>
     </div>
   )
 }
