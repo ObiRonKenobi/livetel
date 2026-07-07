@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import case, func, not_, or_
 from sqlalchemy.orm import Session
 
+from config import settings
 from database import get_db
 from models import Alert, CDR
 from routers.cdrs import _cdr_to_response
@@ -94,6 +95,8 @@ def dismiss_alert(
     body: DismissAlertRequest,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
+    if settings.read_only_demo:
+        raise HTTPException(status_code=403, detail="Alert dismiss is disabled in read-only demo mode")
     if body.status not in VALID_DISMISS:
         raise HTTPException(status_code=400, detail="status must be false_positive or resolved")
     alert = db.query(Alert).filter(Alert.id == alert_id).first()

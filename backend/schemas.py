@@ -98,3 +98,7 @@ class HealthResponse(BaseModel):
     status: str
     db: bool
     ollama: bool
+
+
+class AppConfigResponse(BaseModel):
+    read_only: bool

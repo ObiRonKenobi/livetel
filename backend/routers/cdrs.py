@@ -1,4 +1,5 @@
 import re
+import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +21,23 @@ CDR_PAGE_SIZE = 100
 MAX_WINDOW_PAGE_SIZE = 500
 
 _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
+_CALL_ID_EXACT_RE = re.compile(r"^[a-f0-9]{16}$", re.I)
+_alert_windows_cache: tuple[float, list[tuple[datetime, datetime, str]]] | None = None
+
+
+def _like_escape(term: str) -> str:
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _like_pattern(term: str) -> str:
+    return f"%{_like_escape(term.strip())}%"
+
+
+def _normalize_call_id(raw: str) -> str:
+    cid = raw.strip().lower()
+    if not _HEX_RE.fullmatch(cid) or len(cid) < 6 or len(cid) > 16:
+        raise HTTPException(status_code=400, detail="call_id must be 6–16 hex characters")
+    return cid
 
 
 def _is_call_id_search(term: str) -> bool:
@@ -61,27 +79,38 @@ def _cdr_to_response(
 def _search_clause(raw: str):
     """Match call IDs, URIs, IPs, phone digits (+ optional), SIP method/code, direction."""
     term = raw.strip()
-    like = f"%{term}%"
+    like = _like_pattern(term)
     clauses = [
-        CDR.from_uri.ilike(like),
-        CDR.to_uri.ilike(like),
-        CDR.call_id.ilike(like),
-        CDR.direction.ilike(like),
-        CDR.sip_method.ilike(like),
-        cast(CDR.sip_code, String).ilike(like),
+        CDR.from_uri.ilike(like, escape="\\"),
+        CDR.to_uri.ilike(like, escape="\\"),
+        CDR.call_id.ilike(like, escape="\\"),
+        CDR.direction.ilike(like, escape="\\"),
+        CDR.sip_method.ilike(like, escape="\\"),
+        cast(CDR.sip_code, String).ilike(like, escape="\\"),
     ]
 
     if term.startswith("+"):
         no_plus = term[1:]
         if no_plus:
-            clauses.extend([CDR.from_uri.ilike(f"%{no_plus}%"), CDR.to_uri.ilike(f"%{no_plus}%")])
+            digits_like = _like_pattern(no_plus)
+            clauses.extend([
+                CDR.from_uri.ilike(digits_like, escape="\\"),
+                CDR.to_uri.ilike(digits_like, escape="\\"),
+            ])
 
     digits = "".join(c for c in term if c.isdigit())
     if digits and len(digits) >= 4:
-        clauses.extend([CDR.from_uri.ilike(f"%{digits}%"), CDR.to_uri.ilike(f"%{digits}%")])
+        digits_like = _like_pattern(digits)
+        clauses.extend([
+            CDR.from_uri.ilike(digits_like, escape="\\"),
+            CDR.to_uri.ilike(digits_like, escape="\\"),
+        ])
 
     if "." in term and any(ch.isdigit() for ch in term):
-        clauses.extend([CDR.from_uri.ilike(like), CDR.to_uri.ilike(like)])
+        clauses.extend([
+            CDR.from_uri.ilike(like, escape="\\"),
+            CDR.to_uri.ilike(like, escape="\\"),
+        ])
 
     return or_(*clauses)
 
@@ -92,6 +121,12 @@ def _build_call_status_map(call_ids: set[str]) -> dict[str, str]:
 
 
 def _alert_windows(db: Session) -> list[tuple[datetime, datetime, str]]:
+    global _alert_windows_cache
+    now = time.monotonic()
+    ttl = settings.alert_windows_cache_seconds
+    if _alert_windows_cache is not None and now - _alert_windows_cache[0] < ttl:
+        return _alert_windows_cache[1]
+
     cutoff = datetime.utcnow() - timedelta(hours=24)
     alerts = (
         db.query(Alert.timestamp, Alert.severity)
@@ -101,10 +136,12 @@ def _alert_windows(db: Session) -> list[tuple[datetime, datetime, str]]:
         )
         .all()
     )
-    return [
+    windows = [
         (a.timestamp - timedelta(seconds=90), a.timestamp + timedelta(seconds=30), a.severity)
         for a in alerts
     ]
+    _alert_windows_cache = (now, windows)
+    return windows
 
 
 def _alert_severity_for(ts: datetime, windows: list[tuple[datetime, datetime, str]]) -> str | None:
@@ -295,7 +332,7 @@ def get_cdrs(
     term = search.strip()
     if term:
         if _is_call_id_search(term):
-            query = query.filter(CDR.call_id.ilike(f"{term.lower()}%"))
+            query = query.filter(CDR.call_id.ilike(f"{_like_escape(term.lower())}%", escape="\\"))
         else:
             query = query.filter(_search_clause(term))
 
@@ -334,12 +371,21 @@ def get_cdrs(
 
 @router.get("/calls/{call_id}", response_model=SipFlowResponse)
 def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowResponse:
-    rows = (
-        db.query(CDR)
-        .filter(CDR.call_id.ilike(call_id.strip().lower()))
-        .order_by(CDR.timestamp.asc(), CDR.leg.asc(), CDR.id.asc())
-        .all()
-    )
+    cid_query = _normalize_call_id(call_id)
+    if _CALL_ID_EXACT_RE.fullmatch(cid_query):
+        rows = (
+            db.query(CDR)
+            .filter(CDR.call_id == cid_query)
+            .order_by(CDR.timestamp.asc(), CDR.leg.asc(), CDR.id.asc())
+            .all()
+        )
+    else:
+        rows = (
+            db.query(CDR)
+            .filter(CDR.call_id.ilike(f"{_like_escape(cid_query)}%", escape="\\"))
+            .order_by(CDR.timestamp.asc(), CDR.leg.asc(), CDR.id.asc())
+            .all()
+        )
     if not rows:
         raise HTTPException(status_code=404, detail="Call not found")
 

@@ -7,10 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from config import settings
 from database import engine, ensure_schema, get_db
 from models import Base
 from routers import alerts, cdrs, metrics
-from schemas import HealthResponse
+from schemas import AppConfigResponse, HealthResponse
 from services.generator import baseline_traffic, inject_anomaly
 from services.monitor import check_ollama_health, monitor_and_alert
 from services.pruning import prune_old_data
@@ -35,7 +36,13 @@ async def lifespan(_app: FastAPI):
     logger.info("LiveTel backend stopped")
 
 
-app = FastAPI(title="LiveTel API", lifespan=lifespan)
+app = FastAPI(
+    title="LiveTel API",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.enable_api_docs else None,
+    redoc_url="/redoc" if settings.enable_api_docs else None,
+    openapi_url="/openapi.json" if settings.enable_api_docs else None,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,6 +54,11 @@ app.include_router(alerts.router)
 app.include_router(cdrs.router)
 
 health_router = APIRouter(prefix="/api", tags=["health"])
+
+
+@health_router.get("/config", response_model=AppConfigResponse)
+def get_app_config() -> AppConfigResponse:
+    return AppConfigResponse(read_only=settings.read_only_demo)
 
 
 @health_router.get("/health", response_model=HealthResponse)

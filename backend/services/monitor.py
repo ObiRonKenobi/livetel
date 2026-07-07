@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timedelta
 
 import requests
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -15,25 +16,43 @@ logger = logging.getLogger(__name__)
 _last_alert: dict[str, datetime] = {}
 
 
-def _recent_cdrs(session: Session, window_seconds: int) -> list[CDR]:
-    cutoff = datetime.utcnow() - timedelta(seconds=window_seconds)
-    return session.query(CDR).filter(CDR.timestamp >= cutoff).all()
+def _aggregate_metrics(session: Session, cutoff: datetime) -> dict[str, float]:
+    fraud_match = or_(
+        CDR.to_uri.like("%premium-route.xyz%"),
+        CDR.from_uri.like("%premium-route.xyz%"),
+    )
+    row = (
+        session.query(
+            func.count(CDR.id),
+            func.avg(CDR.latency),
+            func.avg(CDR.jitter),
+            func.avg(CDR.packet_loss),
+            func.avg(CDR.mos),
+            func.sum(case((CDR.sip_code >= 400, 1), else_=0)),
+            func.sum(case((CDR.sip_code.in_([401, 403]), 1), else_=0)),
+            func.sum(case((CDR.sip_code == 408, 1), else_=0)),
+            func.sum(case((CDR.sip_code == 503, 1), else_=0)),
+            func.sum(case((fraud_match, 1), else_=0)),
+        )
+        .filter(CDR.timestamp >= cutoff)
+        .one()
+    )
 
-
-def _aggregate(recent: list[CDR]) -> dict[str, float]:
-    count = len(recent)
+    count = int(row[0] or 0)
     if count == 0:
         return {}
-    error_count = sum(1 for c in recent if c.sip_code >= 400)
-    auth_count = sum(1 for c in recent if c.sip_code in (401, 403))
-    timeout_count = sum(1 for c in recent if c.sip_code == 408)
-    exhaust_count = sum(1 for c in recent if c.sip_code == 503)
-    fraud_count = sum(1 for c in recent if "premium-route.xyz" in c.to_uri or "premium-route.xyz" in c.from_uri)
+
+    error_count = int(row[5] or 0)
+    auth_count = int(row[6] or 0)
+    timeout_count = int(row[7] or 0)
+    exhaust_count = int(row[8] or 0)
+    fraud_count = int(row[9] or 0)
+
     return {
-        "avg_latency": sum(c.latency for c in recent) / count,
-        "avg_jitter": sum(c.jitter for c in recent) / count,
-        "avg_packet_loss": sum(c.packet_loss for c in recent) / count,
-        "avg_mos": sum(c.mos for c in recent) / count,
+        "avg_latency": float(row[1] or 0),
+        "avg_jitter": float(row[2] or 0),
+        "avg_packet_loss": float(row[3] or 0),
+        "avg_mos": float(row[4] or 0),
         "sip_error_rate": (error_count / count) * 100,
         "auth_rate": (auth_count / count) * 100,
         "timeout_rate": (timeout_count / count) * 100,
@@ -87,12 +106,12 @@ def _should_emit_alert(anomaly: str) -> bool:
 
 
 def monitor_and_alert() -> None:
+    cutoff = datetime.utcnow() - timedelta(seconds=settings.metrics_window_seconds)
     with SessionLocal() as session:
-        recent = _recent_cdrs(session, settings.metrics_window_seconds)
-        if not recent:
+        data = _aggregate_metrics(session, cutoff)
+        if not data:
             return
 
-        data = _aggregate(recent)
         anomaly = _detect_anomaly(data)
         if not anomaly or not _should_emit_alert(anomaly):
             return

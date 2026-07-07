@@ -9,6 +9,7 @@ const METRICS_HISTORY_URL = '/api/metrics/history'
 const ALERTS_URL = '/api/alerts'
 const ALERT_STATS_URL = '/api/alerts/stats'
 const CDRS_URL = '/api/cdrs'
+const CONFIG_URL = '/api/config'
 const CDR_PAGE_SIZE = 100
 const CDR_MAX_PAGES = 10
 const CDR_BROWSE_MAX = CDR_PAGE_SIZE * CDR_MAX_PAGES
@@ -204,7 +205,7 @@ function drilldownTitle(frame) {
   return `SIP Call Flow — ${frame.callId}`
 }
 
-function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
+function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss, dismissEnabled }) {
   const sev = severityFor(alert)
   const st = severityStyle(sev)
 
@@ -230,7 +231,7 @@ function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
       {prominent && (
         <p className="text-[10px] text-gray-500 mt-2">Click for root cause, mitigation & SIP evidence</p>
       )}
-      {prominent && (
+      {prominent && dismissEnabled && (
         <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border/50" onClick={(e) => e.stopPropagation()}>
           <button type="button" onClick={() => onDismiss(alert.id, 'resolved')} className="text-[10px] uppercase tracking-wide px-2 py-1 rounded bg-green-500/20 text-green-400 hover:bg-green-500/30">
             Mark resolved
@@ -480,7 +481,7 @@ function CallFlowView({ callId }) {
   )
 }
 
-function AlertDetailView({ alert, onSelectCall, onDismiss }) {
+function AlertDetailView({ alert, onSelectCall, onDismiss, dismissEnabled }) {
   const [ctx, setCtx] = useState(null)
   useEffect(() => {
     setCtx(null)
@@ -537,6 +538,7 @@ function AlertDetailView({ alert, onSelectCall, onDismiss }) {
           </table>
         </div>
       </div>
+      {dismissEnabled && (
       <div className="flex flex-wrap gap-3 pt-2 border-t border-border">
         <button type="button" onClick={() => onDismiss(alert.id, 'resolved')} className="text-xs uppercase tracking-wide px-4 py-2 rounded-lg bg-green-500/20 text-green-400 hover:bg-green-500/30 font-semibold">
           Mark resolved
@@ -545,11 +547,12 @@ function AlertDetailView({ alert, onSelectCall, onDismiss }) {
           False positive — dismiss
         </button>
       </div>
+      )}
     </div>
   )
 }
 
-function DrilldownModal({ stack, onClose, onBack, onPushCall, onDismissAlert }) {
+function DrilldownModal({ stack, onClose, onBack, onPushCall, onDismissAlert, dismissEnabled }) {
   if (!stack.length) return null
   const current = stack[stack.length - 1]
 
@@ -565,6 +568,7 @@ function DrilldownModal({ stack, onClose, onBack, onPushCall, onDismissAlert }) 
           alert={current.alert}
           onSelectCall={onPushCall}
           onDismiss={(id, status) => { onDismissAlert(id, status); onClose() }}
+          dismissEnabled={dismissEnabled}
         />
       )}
       {current.type === 'sip-code' && (
@@ -759,6 +763,7 @@ export default function App() {
   const [readIds, setReadIds] = useState(() => loadReadIds())
   const [newAlertPulse, setNewAlertPulse] = useState(false)
   const [drilldownStack, setDrilldownStack] = useState([])
+  const [readOnly, setReadOnly] = useState(false)
   const prevUnread = useRef(0)
 
   const openDrilldown = useCallback((frame) => {
@@ -819,6 +824,13 @@ export default function App() {
   }, [markRead, openDrilldown])
 
   const unreadCount = useMemo(() => alerts.filter((a) => !readIds.has(a.id)).length, [alerts, readIds])
+
+  useEffect(() => {
+    fetch(CONFIG_URL)
+      .then((r) => r.json())
+      .then((data) => setReadOnly(Boolean(data.read_only)))
+      .catch(() => setReadOnly(false))
+  }, [])
 
   useEffect(() => {
     const fetchMetrics = async () => {
@@ -973,6 +985,7 @@ export default function App() {
                 unread={!readIds.has(alert.id)}
                 onOpenDetail={openAlertDetail}
                 onDismiss={dismissAlert}
+                dismissEnabled={!readOnly}
               />
             ))}
           </div>
@@ -989,6 +1002,7 @@ export default function App() {
         onBack={popDrilldown}
         onPushCall={(callId) => pushDrilldown({ type: 'call', callId })}
         onDismissAlert={dismissAlert}
+        dismissEnabled={!readOnly}
       />
 
       <footer className="mt-8 text-center text-xs text-gray-600">Metrics {POLL_METRICS_MS / 1000}s · CDR {POLL_CDR_MS / 1000}s · Alerts {POLL_ALERTS_MS / 1000}s · 24h retention</footer>

@@ -10,6 +10,8 @@ Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 Environment=USE_TEMPLATE_AI=true
+Environment=READ_ONLY_DEMO=true
+Environment=ENABLE_API_DOCS=false
 
 [Install]
 WantedBy=multi-user.target
