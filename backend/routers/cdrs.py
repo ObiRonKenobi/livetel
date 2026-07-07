@@ -181,7 +181,7 @@ def _cdr_matches_anomaly(cdr: CDR, alert_type: str) -> bool:
     if t == "codec_quality_drop":
         return 0 < cdr.mos < 3.0
     if t == "softphone_registration_failure":
-        return code in (401, 403)
+        return cdr.sip_method == "REGISTER" and code in (401, 403)
     return False
 
 

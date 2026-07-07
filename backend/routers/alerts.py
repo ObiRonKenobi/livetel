@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_db
 from models import Alert, CDR
-from routers.cdrs import _cdr_to_response, _correlation_window, invalidate_alert_windows_cache
+from routers.cdrs import (
+    _cdr_matches_anomaly,
+    _cdr_to_response,
+    _correlation_window,
+    invalidate_alert_windows_cache,
+)
 from schemas import AlertContextResponse, AlertResponse, AlertStatsResponse, DismissAlertRequest
 from services.anomalies import ANOMALIES, LEGACY_KEY_MAP
 from services.template_analysis import template_mitigation, template_root_cause
@@ -117,13 +122,25 @@ def get_alert_context(alert_id: int, db: Session = Depends(get_db)) -> AlertCont
     base_type = _normalize_type(alert.type)
     window_start, window_end = _correlation_window(alert)
 
-    related = (
+    candidates = (
         db.query(CDR)
         .filter(CDR.timestamp >= window_start, CDR.timestamp <= window_end)
-        .order_by(CDR.timestamp.desc())
-        .limit(80)
         .all()
     )
+    matched_call_ids = {r.call_id for r in candidates if _cdr_matches_anomaly(r, alert.type)}
+    if matched_call_ids:
+        related = (
+            db.query(CDR)
+            .filter(CDR.call_id.in_(matched_call_ids))
+            .order_by(CDR.timestamp.asc(), CDR.leg.asc(), CDR.id.asc())
+            .limit(200)
+            .all()
+        )
+    else:
+        related = sorted(
+            [r for r in candidates if _cdr_matches_anomaly(r, alert.type)],
+            key=lambda r: (r.timestamp, r.leg, r.id),
+        )[:80]
 
     alert_resp = AlertResponse(
         id=alert.id,

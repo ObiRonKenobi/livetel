@@ -395,6 +395,12 @@ function CompactSipCodes({ errorCodes, onCodeClick }) {
   )
 }
 
+function legLabel(leg, direction) {
+  if (leg === 1) return direction === 'inbound' ? 'Leg 1 · ingress' : 'Leg 1 · orig'
+  if (leg === 2) return 'Leg 2 · egress'
+  return `Leg ${leg}`
+}
+
 function SipEventRow({ ev, onSelect }) {
   const interactive = Boolean(onSelect)
   const alertBorder = ev.alert_severity === 'critical'
@@ -409,7 +415,7 @@ function SipEventRow({ ev, onSelect }) {
     <>
       <span className="text-gray-500 w-16 shrink-0">{formatTime(ev.time)}</span>
       {interactive && <span className="text-vibrantBlue w-24 shrink-0 truncate" title={ev.call_id}>{ev.call_id.slice(0, 10)}…</span>}
-      <span className="text-vibrantBlue w-16 shrink-0">Leg {ev.leg}</span>
+      <span className="text-vibrantBlue w-24 shrink-0">{legLabel(ev.leg, ev.direction)}</span>
       <span className="text-white w-20 shrink-0">{ev.sip_method}</span>
       <span className={`w-12 shrink-0 ${ev.sip_code >= 400 ? 'text-neonRed font-bold' : 'text-green-400'}`}>{ev.sip_code}</span>
       <span className="text-gray-400 uppercase w-16 shrink-0">{ev.direction}</span>
@@ -521,7 +527,7 @@ function CallFlowView({ callId }) {
       )}
       <p className="text-sm text-gray-400">
         {flow.events.length} signaling event{flow.events.length === 1 ? '' : 's'}
-        {hasAlerts ? ' · alert-correlated legs highlighted below' : ' · includes INVITE, BYE, REFER (transfer), voicemail legs'}
+        {hasAlerts ? ' · alert-correlated legs highlighted below' : ' · B2BUA call: leg 1 (ingress/orig) + leg 2 (egress to carrier)'}
       </p>
       <div className="space-y-2">
         {flow.events.map((ev, i) => (
