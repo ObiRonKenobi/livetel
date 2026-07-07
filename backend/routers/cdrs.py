@@ -120,28 +120,59 @@ def _build_call_status_map(call_ids: set[str]) -> dict[str, str]:
     return {cid: ("active" if cid in live else "completed") for cid in call_ids}
 
 
-def _alert_windows(db: Session) -> list[tuple[datetime, datetime, str]]:
-    global _alert_windows_cache
-    now = time.monotonic()
-    ttl = settings.alert_windows_cache_seconds
-    if _alert_windows_cache is not None and now - _alert_windows_cache[0] < ttl:
-        return _alert_windows_cache[1]
+def _correlation_window(alert: Alert, *, now: datetime | None = None) -> tuple[datetime, datetime]:
+    """Time bounds for matching CDR rows to an alert."""
+    now = now or datetime.utcnow()
+    start = alert.timestamp - timedelta(seconds=90)
+    if alert.dismissed_status is None:
+        end = max(alert.timestamp + timedelta(seconds=30), now)
+    else:
+        end = alert.timestamp + timedelta(seconds=30)
+    return start, end
 
+
+def _build_alert_windows(alerts: list[Alert], *, now: datetime | None = None) -> list[tuple[datetime, datetime, str]]:
+    now = now or datetime.utcnow()
+    windows: list[tuple[datetime, datetime, str]] = []
+    for alert in alerts:
+        if alert.dismissed_status is not None:
+            continue
+        start, end = _correlation_window(alert, now=now)
+        windows.append((start, end, alert.severity))
+    return windows
+
+
+_alert_windows_cache: tuple[float, list[Alert]] | None = None
+
+
+def _fetch_open_alerts(db: Session) -> list[Alert]:
     cutoff = datetime.utcnow() - timedelta(hours=24)
-    alerts = (
-        db.query(Alert.timestamp, Alert.severity)
+    return (
+        db.query(Alert)
         .filter(
             Alert.timestamp >= cutoff,
+            Alert.dismissed_status.is_(None),
             not_(or_(Alert.type.like("AI_%"), Alert.type == "AI_error")),
         )
         .all()
     )
-    windows = [
-        (a.timestamp - timedelta(seconds=90), a.timestamp + timedelta(seconds=30), a.severity)
-        for a in alerts
-    ]
-    _alert_windows_cache = (now, windows)
-    return windows
+
+
+def _alert_windows(db: Session) -> list[tuple[datetime, datetime, str]]:
+    global _alert_windows_cache
+    now_mono = time.monotonic()
+    ttl = settings.alert_windows_cache_seconds
+    if _alert_windows_cache is not None and now_mono - _alert_windows_cache[0] < ttl:
+        open_alerts = _alert_windows_cache[1]
+    else:
+        open_alerts = _fetch_open_alerts(db)
+        _alert_windows_cache = (now_mono, open_alerts)
+    return _build_alert_windows(open_alerts)
+
+
+def invalidate_alert_windows_cache() -> None:
+    global _alert_windows_cache
+    _alert_windows_cache = None
 
 
 def _alert_severity_for(ts: datetime, windows: list[tuple[datetime, datetime, str]]) -> str | None:
@@ -236,9 +267,9 @@ def _alerts_for_call(db: Session, cdr_rows: list[CDR]) -> list[CallFlowAlertInfo
     )
 
     matched: list[CallFlowAlertInfo] = []
+    now = datetime.utcnow()
     for alert in alerts:
-        window_start = alert.timestamp - timedelta(seconds=90)
-        window_end = alert.timestamp + timedelta(seconds=30)
+        window_start, window_end = _correlation_window(alert, now=now)
         if not any(window_start <= ts <= window_end for ts in times):
             continue
 

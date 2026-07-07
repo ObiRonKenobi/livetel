@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_db
 from models import Alert, CDR
-from routers.cdrs import _cdr_to_response
+from routers.cdrs import _cdr_to_response, invalidate_alert_windows_cache
 from schemas import AlertContextResponse, AlertResponse, AlertStatsResponse, DismissAlertRequest
 from services.anomalies import ANOMALIES, LEGACY_KEY_MAP
 from services.template_analysis import template_mitigation, template_root_cause
@@ -104,6 +104,7 @@ def dismiss_alert(
         raise HTTPException(status_code=404, detail="Alert not found")
     alert.dismissed_status = body.status
     db.commit()
+    invalidate_alert_windows_cache()
     return {"ok": "true", "status": body.status}
 
 

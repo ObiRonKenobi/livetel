@@ -423,23 +423,19 @@ function SipCodeEventsView({ sipCode, onSelectCall }) {
 function CallFlowAlertSection({ alert: flowAlert }) {
   const st = severityStyle(severityFor(flowAlert))
   return (
-    <div className={`rounded-lg border border-border border-l-4 ${st.border} bg-darkBg p-4 space-y-3`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded ${st.badge}`}>
-          {flowAlert.severity}
-        </span>
-        <span className={`text-xs font-bold uppercase ${st.text}`}>{alertTypeLabel(flowAlert.type)}</span>
-        <span className="text-xs text-gray-500 tabular-nums">{formatAlertTime(flowAlert.time)}</span>
+    <div className="space-y-5">
+      <div className={`p-4 rounded-lg border-l-4 ${st.border} bg-darkBg`}>
+        <span className={`text-xs font-bold uppercase ${st.text}`}>{flowAlert.severity} · {formatAlertTime(flowAlert.time)}</span>
+        {flowAlert.summary && (
+          <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap">{flowAlert.summary}</p>
+        )}
       </div>
-      {flowAlert.summary && (
-        <p className="text-sm text-gray-200 whitespace-pre-wrap">{flowAlert.summary}</p>
-      )}
       <div>
-        <h3 className="text-xs font-bold text-vibrantBlue uppercase mb-1">Root Cause</h3>
+        <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Root Cause</h3>
         <p className="text-sm text-gray-300">{flowAlert.root_cause}</p>
       </div>
       <div>
-        <h3 className="text-xs font-bold text-vibrantBlue uppercase mb-1">Mitigation</h3>
+        <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Mitigation</h3>
         <p className="text-sm text-gray-300 whitespace-pre-wrap">{flowAlert.mitigation}</p>
       </div>
     </div>
@@ -459,12 +455,14 @@ function CallFlowView({ callId }) {
   return (
     <div className="space-y-4">
       {hasAlerts && (
-        <div className="space-y-3">
-          <p className="text-xs text-gray-500 uppercase tracking-wide">
-            Correlated alert{flow.alerts.length === 1 ? '' : 's'} ({flow.alerts.length})
-          </p>
+        <div className="space-y-6">
           {flow.alerts.map((a) => (
-            <CallFlowAlertSection key={a.id} alert={a} />
+            <div key={a.id} className="pb-6 border-b border-border last:border-0 last:pb-0">
+              <p className={`text-xs font-bold uppercase mb-3 ${severityStyle(severityFor(a)).text}`}>
+                {alertTypeLabel(a.type)}
+              </p>
+              <CallFlowAlertSection alert={a} />
+            </div>
           ))}
         </div>
       )}
