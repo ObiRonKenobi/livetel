@@ -40,7 +40,7 @@ class CdrResponse(BaseModel):
     packet_loss: float
     sip_code: int
     leg: int
-    call_status: str = "completed"  # active | completed
+    call_status: str = "completed"  # active | completed | failed
     alert_severity: str | None = None  # critical | warning when tied to an alert window
 
 

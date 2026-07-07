@@ -115,9 +115,37 @@ def _search_clause(raw: str):
     return or_(*clauses)
 
 
-def _build_call_status_map(call_ids: set[str]) -> dict[str, str]:
+def _call_dispositions(db: Session, call_ids: set[str]) -> dict[str, str]:
+    """active = in live pool; failed = INVITE rejected (4xx/5xx, no 200); else completed."""
+    if not call_ids:
+        return {}
     live = active_call_ids()
-    return {cid: ("active" if cid in live else "completed") for cid in call_ids}
+    result: dict[str, str] = {}
+    remaining: set[str] = set()
+    for cid in call_ids:
+        if cid in live:
+            result[cid] = "active"
+        else:
+            remaining.add(cid)
+    if not remaining:
+        return result
+
+    rows = (
+        db.query(CDR.call_id, CDR.sip_code)
+        .filter(CDR.call_id.in_(remaining), CDR.sip_method == "INVITE")
+        .all()
+    )
+    invite_codes: dict[str, list[int]] = {}
+    for call_id, code in rows:
+        invite_codes.setdefault(call_id, []).append(code)
+
+    for cid in remaining:
+        codes = invite_codes.get(cid, [])
+        if codes and any(c >= 400 for c in codes) and not any(c == 200 for c in codes):
+            result[cid] = "failed"
+        else:
+            result[cid] = "completed"
+    return result
 
 
 def _correlation_window(alert: Alert, *, now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -317,7 +345,7 @@ def _get_window_cdrs(
     rows = query.order_by(CDR.timestamp.desc(), CDR.id.desc()).offset(offset).limit(page_size).all()
 
     call_ids = {r.call_id for r in rows}
-    status_map = _build_call_status_map(call_ids)
+    status_map = _call_dispositions(db, call_ids)
     windows = _alert_windows(db)
     alert_by_call = _alert_severity_by_call_id(db, call_ids, windows)
 
@@ -378,7 +406,7 @@ def get_cdrs(
     rows = query.order_by(CDR.id.desc()).offset(offset).limit(safe_page_size).all()
 
     call_ids = {r.call_id for r in rows}
-    status_map = _build_call_status_map(call_ids)
+    status_map = _call_dispositions(db, call_ids)
     windows = _alert_windows(db)
     alert_by_call = _alert_severity_by_call_id(db, call_ids, windows)
 
@@ -421,7 +449,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
         raise HTTPException(status_code=404, detail="Call not found")
 
     cid = rows[0].call_id
-    status = "active" if cid in active_call_ids() else "completed"
+    status = _call_dispositions(db, {cid}).get(cid, "completed")
     windows = _alert_windows(db)
     alert_by_call = _alert_severity_by_call_id(db, {cid}, windows)
 

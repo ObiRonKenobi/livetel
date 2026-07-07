@@ -587,6 +587,13 @@ function CallStatusIcon({ status }) {
       </span>
     )
   }
+  if (status === 'failed') {
+    return (
+      <span title="Call failed / disconnected" className="inline-flex items-center text-neonRed">
+        <span className="w-2 h-2 rounded-full bg-neonRed shrink-0" />
+      </span>
+    )
+  }
   return (
     <span title="Call completed" className="inline-flex items-center">
       <span className="w-2 h-2 rounded-full bg-gray-600 shrink-0" />
@@ -666,6 +673,8 @@ function CdrStreamTab({ search, setSearch, onSelectCall }) {
         <span className="text-green-400">●</span> active call
         <span className="mx-2">·</span>
         <span className="text-gray-500">●</span> completed
+        <span className="mx-2">·</span>
+        <span className="text-neonRed">●</span> failed / disconnected
         <span className="mx-2">·</span>
         <span className="text-neonRed">▲</span> alert-correlated row
       </p>

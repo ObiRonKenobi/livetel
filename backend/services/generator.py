@@ -18,6 +18,21 @@ INTL_PREFIXES = ["+447", "+491", "+331", "+813", "+861", "+234"]
 TARGET_ACTIVE_MIN = 100
 TARGET_ACTIVE_MAX = 150
 
+# Anomalies that fail at INVITE — call never enters the live (active) pool.
+_FAIL_ANOMALIES = frozenset({
+    "sip_trunk_unreachable",
+    "sip_503_overload",
+    "auth_failure",
+    "sip_dns_timeout",
+})
+
+_FAIL_INVITE_CODES: dict[str, list[int]] = {
+    "sip_503_overload": [503],
+    "sip_trunk_unreachable": [503, 503, 408],
+    "auth_failure": [401, 403],
+    "sip_dns_timeout": [408],
+}
+
 
 @dataclass
 class LiveCall:
@@ -36,6 +51,7 @@ class LiveCall:
     transfer_done: bool = False
     voicemail_done: bool = False
     failed: bool = False
+    fail_code: int | None = None
 
 
 _live: dict[str, LiveCall] = {}
@@ -155,6 +171,12 @@ def _cdr(
     )
 
 
+def _failure_invite_code(anomaly: str | None) -> int:
+    if anomaly and anomaly in _FAIL_INVITE_CODES:
+        return random.choice(_FAIL_INVITE_CODES[anomaly])
+    return random.choice([503, 408, 403])
+
+
 def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveCall:
     now = now or datetime.utcnow()
     call_id = uuid.uuid4().hex[:16]
@@ -164,14 +186,15 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
     if anomaly:
         qos = _apply_qos_anomaly(qos, anomaly)
 
-    failed = anomaly in ("sip_trunk_unreachable", "sip_503_overload", "auth_failure", "sip_dns_timeout")
+    failed = anomaly in _FAIL_ANOMALIES
+    fail_code = _failure_invite_code(anomaly) if failed else None
     if anomaly == "auth_failure":
         qos = _baseline_qos()
 
-    duration_sec = random.randint(60, 360) if not failed else random.randint(5, 20)
+    duration_sec = random.randint(60, 360) if not failed else 0
     ring_sec = random.randint(2, 8)
     answered_at = now + timedelta(seconds=ring_sec)
-    end_at = answered_at + timedelta(seconds=duration_sec)
+    end_at = answered_at + timedelta(seconds=duration_sec) if not failed else now
 
     return LiveCall(
         call_id=call_id,
@@ -187,19 +210,27 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
         with_transfer=anomaly is None and random.random() < 0.12,
         with_voicemail=anomaly is None and random.random() < 0.08,
         failed=failed,
+        fail_code=fail_code,
     )
 
 
 def _setup_cdrs(lc: LiveCall, ts: datetime) -> list[CDR]:
-    rows = [
-        _cdr(lc, method="INVITE", code=100, ts=ts - timedelta(milliseconds=200)),
-        _cdr(lc, method="INVITE", code=180, ts=ts - timedelta(milliseconds=100)),
-    ]
+    rows = [_cdr(lc, method="INVITE", code=100, ts=ts - timedelta(milliseconds=200))]
     if lc.failed:
-        fail_code = random.choice([503, 408, 403, 401])
-        rows.append(_cdr(lc, method="INVITE", code=fail_code, ts=ts))
+        code = lc.fail_code or 503
+        # Auth/DNS timeouts reject before ringing; trunk overload may ring then fail.
+        if lc.anomaly in ("auth_failure", "sip_dns_timeout"):
+            rows.append(_cdr(lc, method="INVITE", code=code, ts=ts))
+        else:
+            rows.extend([
+                _cdr(lc, method="INVITE", code=180, ts=ts - timedelta(milliseconds=100)),
+                _cdr(lc, method="INVITE", code=code, ts=ts),
+            ])
         return rows
-    rows.append(_cdr(lc, method="INVITE", code=200, ts=ts, dur=lc.duration_sec))
+    rows.extend([
+        _cdr(lc, method="INVITE", code=180, ts=ts - timedelta(milliseconds=100)),
+        _cdr(lc, method="INVITE", code=200, ts=ts, dur=lc.duration_sec),
+    ])
     return rows
 
 
@@ -270,11 +301,6 @@ def tick_live_calls() -> None:
 
     with SessionLocal() as session:
         for call_id, lc in list(_live.items()):
-            if lc.failed:
-                if now >= lc.end_at:
-                    del _live[call_id]
-                continue
-
             elapsed = (now - lc.answered_at).total_seconds()
             if lc.with_transfer and not lc.transfer_done and elapsed >= lc.duration_sec * 0.35:
                 lc.transfer_done = True
@@ -298,9 +324,8 @@ def tick_live_calls() -> None:
                 lc = _new_live_call(None, now=now)
                 for row in _setup_cdrs(lc, now):
                     session.add(row)
-                if lc.failed:
-                    lc.end_at = now + timedelta(seconds=random.randint(3, 15))
-                _live[lc.call_id] = lc
+                if not lc.failed:
+                    _live[lc.call_id] = lc
 
         session.commit()
 
