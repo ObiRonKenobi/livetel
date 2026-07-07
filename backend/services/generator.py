@@ -125,16 +125,16 @@ def _build_endpoints(direction: str, anomaly: str | None) -> tuple[str, str, str
 
 def _apply_qos_anomaly(qos: dict[str, float], anomaly: str) -> dict[str, float]:
     q = dict(qos)
-    if anomaly == "congestion":
+    if anomaly in ("congestion", "rtp_packet_loss"):
         q.update(
             latency=float(random.randint(250, 500)),
             jitter=float(random.randint(35, 90)),
             packet_loss=round(random.uniform(6, 18), 2),
             mos=round(random.uniform(1.4, 2.4), 2),
         )
-    elif anomaly == "latency_spike":
+    elif anomaly in ("latency_spike", "sip_latency_spike"):
         q.update(latency=float(random.randint(180, 350)), mos=round(random.uniform(2.5, 3.2), 2))
-    elif anomaly == "mos_degradation":
+    elif anomaly in ("mos_degradation", "codec_quality_drop"):
         q.update(mos=round(random.uniform(1.2, 2.5), 2), packet_loss=round(random.uniform(2, 6), 2))
     elif anomaly == "one_way_audio":
         q.update(packet_loss=round(random.uniform(8, 22), 2), jitter=float(random.randint(20, 50)))

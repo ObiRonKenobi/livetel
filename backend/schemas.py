@@ -41,7 +41,7 @@ class CdrResponse(BaseModel):
     sip_code: int
     leg: int
     call_status: str = "completed"  # active | completed | failed
-    alert_severity: str | None = None  # critical | warning when tied to an alert window
+    alert_severity: str | None = None  # critical | warning when this row correlates to an open alert
 
 
 class CdrListResponse(BaseModel):

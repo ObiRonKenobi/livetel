@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_db
 from models import Alert, CDR
-from routers.cdrs import _cdr_to_response, invalidate_alert_windows_cache
+from routers.cdrs import _cdr_to_response, _correlation_window, invalidate_alert_windows_cache
 from schemas import AlertContextResponse, AlertResponse, AlertStatsResponse, DismissAlertRequest
 from services.anomalies import ANOMALIES, LEGACY_KEY_MAP
 from services.template_analysis import template_mitigation, template_root_cause
@@ -115,8 +115,7 @@ def get_alert_context(alert_id: int, db: Session = Depends(get_db)) -> AlertCont
         raise HTTPException(status_code=404, detail="Alert not found")
 
     base_type = _normalize_type(alert.type)
-    window_start = alert.timestamp - timedelta(seconds=90)
-    window_end = alert.timestamp + timedelta(seconds=30)
+    window_start, window_end = _correlation_window(alert)
 
     related = (
         db.query(CDR)

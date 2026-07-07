@@ -19,10 +19,12 @@ router = APIRouter(prefix="/api", tags=["cdrs"])
 MAX_CDR_PAGES = 10
 CDR_PAGE_SIZE = 100
 MAX_WINDOW_PAGE_SIZE = 500
+ALERT_CORRELATION_BEFORE_SECONDS = 90
+ALERT_CORRELATION_AFTER_SECONDS = 30
 
 _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
 _CALL_ID_EXACT_RE = re.compile(r"^[a-f0-9]{16}$", re.I)
-_alert_windows_cache: tuple[float, list[tuple[datetime, datetime, str]]] | None = None
+_open_alerts_cache: tuple[float, list[Alert]] | None = None
 
 
 def _like_escape(term: str) -> str:
@@ -148,29 +150,55 @@ def _call_dispositions(db: Session, call_ids: set[str]) -> dict[str, str]:
     return result
 
 
-def _correlation_window(alert: Alert, *, now: datetime | None = None) -> tuple[datetime, datetime]:
-    """Time bounds for matching CDR rows to an alert."""
-    now = now or datetime.utcnow()
-    start = alert.timestamp - timedelta(seconds=90)
-    if alert.dismissed_status is None:
-        end = max(alert.timestamp + timedelta(seconds=30), now)
-    else:
-        end = alert.timestamp + timedelta(seconds=30)
+def _correlation_window(alert: Alert) -> tuple[datetime, datetime]:
+    """Fixed burst window around alert creation (matches alert context API)."""
+    start = alert.timestamp - timedelta(seconds=ALERT_CORRELATION_BEFORE_SECONDS)
+    end = alert.timestamp + timedelta(seconds=ALERT_CORRELATION_AFTER_SECONDS)
     return start, end
 
 
-def _build_alert_windows(alerts: list[Alert], *, now: datetime | None = None) -> list[tuple[datetime, datetime, str]]:
-    now = now or datetime.utcnow()
-    windows: list[tuple[datetime, datetime, str]] = []
-    for alert in alerts:
-        if alert.dismissed_status is not None:
+def _cdr_matches_anomaly(cdr: CDR, alert_type: str) -> bool:
+    """True when this CDR leg looks like a symptom of the alert type."""
+    t = _normalize_alert_type(alert_type)
+    code = cdr.sip_code
+    if t == "sip_503_overload":
+        return cdr.sip_method == "INVITE" and code == 503
+    if t == "sip_trunk_unreachable":
+        return cdr.sip_method == "INVITE" and code in (503, 408)
+    if t == "auth_failure":
+        return cdr.sip_method == "INVITE" and code in (401, 403)
+    if t == "sip_dns_timeout":
+        return cdr.sip_method == "INVITE" and code == 408
+    if t == "toll_fraud":
+        uris = f"{cdr.from_uri or ''} {cdr.to_uri or ''}"
+        return "premium-route.xyz" in uris
+    if t == "rtp_packet_loss":
+        return cdr.packet_loss > 5 or cdr.jitter > 30
+    if t == "one_way_audio":
+        return cdr.packet_loss > 8
+    if t == "sip_latency_spike":
+        return cdr.latency > 140
+    if t == "codec_quality_drop":
+        return 0 < cdr.mos < 3.0
+    if t == "softphone_registration_failure":
+        return code in (401, 403)
+    return False
+
+
+def _cdr_alert_severity(cdr: CDR, open_alerts: list[Alert]) -> str | None:
+    """Per-row severity: open alert whose burst window contains this leg and matches its type."""
+    best: str | None = None
+    for alert in open_alerts:
+        start, end = _correlation_window(alert)
+        if not (start <= cdr.timestamp <= end):
             continue
-        start, end = _correlation_window(alert, now=now)
-        windows.append((start, end, alert.severity))
-    return windows
-
-
-_alert_windows_cache: tuple[float, list[Alert]] | None = None
+        if not _cdr_matches_anomaly(cdr, alert.type):
+            continue
+        if alert.severity == "critical":
+            return "critical"
+        if best != "critical":
+            best = alert.severity
+    return best
 
 
 def _fetch_open_alerts(db: Session) -> list[Alert]:
@@ -186,75 +214,20 @@ def _fetch_open_alerts(db: Session) -> list[Alert]:
     )
 
 
-def _alert_windows(db: Session) -> list[tuple[datetime, datetime, str]]:
-    global _alert_windows_cache
+def _open_alerts_cached(db: Session) -> list[Alert]:
+    global _open_alerts_cache
     now_mono = time.monotonic()
     ttl = settings.alert_windows_cache_seconds
-    if _alert_windows_cache is not None and now_mono - _alert_windows_cache[0] < ttl:
-        open_alerts = _alert_windows_cache[1]
-    else:
-        open_alerts = _fetch_open_alerts(db)
-        _alert_windows_cache = (now_mono, open_alerts)
-    return _build_alert_windows(open_alerts)
+    if _open_alerts_cache is not None and now_mono - _open_alerts_cache[0] < ttl:
+        return _open_alerts_cache[1]
+    open_alerts = _fetch_open_alerts(db)
+    _open_alerts_cache = (now_mono, open_alerts)
+    return open_alerts
 
 
 def invalidate_alert_windows_cache() -> None:
-    global _alert_windows_cache
-    _alert_windows_cache = None
-
-
-def _alert_severity_for(ts: datetime, windows: list[tuple[datetime, datetime, str]]) -> str | None:
-    best: str | None = None
-    for start, end, sev in windows:
-        if start <= ts <= end:
-            if sev == "critical":
-                return "critical"
-            if best != "critical":
-                best = sev
-    return best
-
-
-def _alert_severity_by_call_id(
-    db: Session,
-    call_ids: set[str],
-    windows: list[tuple[datetime, datetime, str]],
-) -> dict[str, str]:
-    """Map call_id → severity when any leg falls inside an alert window."""
-    if not call_ids or not windows:
-        return {}
-    earliest = min(start for start, _, _ in windows)
-    rows = (
-        db.query(CDR.call_id, CDR.timestamp)
-        .filter(CDR.call_id.in_(call_ids), CDR.timestamp >= earliest)
-        .all()
-    )
-    by_call: dict[str, str] = {}
-    for call_id, ts in rows:
-        sev = _alert_severity_for(ts, windows)
-        if not sev:
-            continue
-        prev = by_call.get(call_id)
-        if sev == "critical" or prev == "critical":
-            by_call[call_id] = "critical"
-        elif prev:
-            by_call[call_id] = prev
-        else:
-            by_call[call_id] = sev
-    return by_call
-
-
-def _resolve_alert_severity(
-    r: CDR,
-    windows: list[tuple[datetime, datetime, str]],
-    by_call: dict[str, str],
-) -> str | None:
-    direct = _alert_severity_for(r.timestamp, windows)
-    if direct == "critical":
-        return "critical"
-    inherited = by_call.get(r.call_id)
-    if direct:
-        return direct
-    return inherited
+    global _open_alerts_cache
+    _open_alerts_cache = None
 
 
 def _alert_summary(details: str) -> str:
@@ -282,12 +255,13 @@ def _normalize_alert_type(alert_type: str) -> str:
 def _alerts_for_call(db: Session, cdr_rows: list[CDR]) -> list[CallFlowAlertInfo]:
     if not cdr_rows:
         return []
-    cutoff = datetime.utcnow() - timedelta(hours=24)
-    times = [r.timestamp for r in cdr_rows]
+    t_min = min(r.timestamp for r in cdr_rows)
+    t_max = max(r.timestamp for r in cdr_rows)
     alerts = (
         db.query(Alert)
         .filter(
-            Alert.timestamp >= cutoff,
+            Alert.timestamp >= t_min - timedelta(seconds=ALERT_CORRELATION_BEFORE_SECONDS),
+            Alert.timestamp <= t_max + timedelta(seconds=ALERT_CORRELATION_AFTER_SECONDS),
             not_(or_(Alert.type.like("AI_%"), Alert.type == "AI_error")),
         )
         .order_by(Alert.timestamp.desc())
@@ -295,10 +269,12 @@ def _alerts_for_call(db: Session, cdr_rows: list[CDR]) -> list[CallFlowAlertInfo
     )
 
     matched: list[CallFlowAlertInfo] = []
-    now = datetime.utcnow()
     for alert in alerts:
-        window_start, window_end = _correlation_window(alert, now=now)
-        if not any(window_start <= ts <= window_end for ts in times):
+        window_start, window_end = _correlation_window(alert)
+        if not any(
+            window_start <= r.timestamp <= window_end and _cdr_matches_anomaly(r, alert.type)
+            for r in cdr_rows
+        ):
             continue
 
         root, mit = _parse_alert_details(alert.details)
@@ -346,14 +322,13 @@ def _get_window_cdrs(
 
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
-    windows = _alert_windows(db)
-    alert_by_call = _alert_severity_by_call_id(db, call_ids, windows)
+    open_alerts = _open_alerts_cached(db)
 
     items = [
         _cdr_to_response(
             r,
             call_status=status_map.get(r.call_id, "completed"),
-            alert_severity=_resolve_alert_severity(r, windows, alert_by_call),
+            alert_severity=_cdr_alert_severity(r, open_alerts),
         )
         for r in rows
     ]
@@ -407,14 +382,13 @@ def get_cdrs(
 
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
-    windows = _alert_windows(db)
-    alert_by_call = _alert_severity_by_call_id(db, call_ids, windows)
+    open_alerts = _open_alerts_cached(db)
 
     items = [
         _cdr_to_response(
             r,
             call_status=status_map.get(r.call_id, "completed"),
-            alert_severity=_resolve_alert_severity(r, windows, alert_by_call),
+            alert_severity=_cdr_alert_severity(r, open_alerts),
         )
         for r in rows
     ]
@@ -450,8 +424,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
 
     cid = rows[0].call_id
     status = _call_dispositions(db, {cid}).get(cid, "completed")
-    windows = _alert_windows(db)
-    alert_by_call = _alert_severity_by_call_id(db, {cid}, windows)
+    open_alerts = _open_alerts_cached(db)
 
     return SipFlowResponse(
         call_id=cid,
@@ -459,7 +432,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
             _cdr_to_response(
                 r,
                 call_status=status,
-                alert_severity=_resolve_alert_severity(r, windows, alert_by_call),
+                alert_severity=_cdr_alert_severity(r, open_alerts),
             )
             for r in rows
         ],
