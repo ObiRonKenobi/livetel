@@ -18,6 +18,11 @@ SBC_URI = "sbc@livetel.net"
 
 TARGET_ACTIVE_MIN = 100
 TARGET_ACTIVE_MAX = 150
+RING_SEC_MIN = 8
+RING_SEC_MAX = 25
+TALK_SEC_MIN = 120
+TALK_SEC_MAX = 720
+TRUNK_AUTH_CHANCE = 0.18
 
 # Failures on egress (carrier/trunk) — leg 1 may ring, leg 2 rejects.
 _EGRESS_FAIL_ANOMALIES = frozenset({
@@ -65,6 +70,7 @@ class LiveCall:
     trunk_uri: str  # leg 2 To (carrier / PSTN)
     qos: dict[str, float]
     qos_leg2: dict[str, float] = field(default_factory=dict)
+    ring_sec: int = 12
     duration_sec: int = 0
     started_at: datetime = field(default_factory=datetime.utcnow)
     answered_at: datetime = field(default_factory=datetime.utcnow)
@@ -78,9 +84,11 @@ class LiveCall:
     fail_leg: int | None = None
     fail_code: int | None = None
     ring_before_fail: bool = False
+    trunk_auth: bool = False
 
 
 _live: dict[str, LiveCall] = {}
+_pending: dict[str, LiveCall] = {}  # ringing; answer CDRs emitted when answered_at reached
 _seeded = False
 
 
@@ -189,10 +197,12 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
         qos = _baseline_qos()
         qos_leg2 = dict(qos)
 
-    duration_sec = random.randint(60, 360) if not failed else 0
-    ring_sec = random.randint(2, 8)
-    answered_at = now + timedelta(seconds=ring_sec)
+    duration_sec = random.randint(TALK_SEC_MIN, TALK_SEC_MAX) if not failed else 0
+    ring_sec = random.randint(RING_SEC_MIN, RING_SEC_MAX) if not failed else random.randint(4, 12)
+    started_at = now
+    answered_at = now + timedelta(seconds=ring_sec) if not failed else now
     end_at = answered_at + timedelta(seconds=duration_sec) if not failed else now
+    trunk_auth = not failed and random.random() < TRUNK_AUTH_CHANCE
 
     return LiveCall(
         call_id=uuid.uuid4().hex[:16],
@@ -202,8 +212,9 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
         trunk_uri=trunk_uri,
         qos=qos,
         qos_leg2=qos_leg2,
+        ring_sec=ring_sec,
         duration_sec=duration_sec,
-        started_at=now,
+        started_at=started_at,
         answered_at=answered_at,
         end_at=end_at,
         anomaly=anomaly,
@@ -213,6 +224,7 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
         fail_leg=fail_leg,
         fail_code=fail_code,
         ring_before_fail=ring_before_fail,
+        trunk_auth=trunk_auth,
     )
 
 
@@ -260,53 +272,104 @@ def _row(
     )
 
 
-def _ingress_auth_failure(lc: LiveCall, ts: datetime) -> list[CDR]:
+def _ingress_auth_failure(lc: LiveCall) -> list[CDR]:
     code = lc.fail_code or 401
-    rows = [_row(lc, leg=1, method="INVITE", code=100, ts=ts - timedelta(milliseconds=250))]
+    t0 = lc.started_at
+    rows = [
+        _row(lc, leg=1, method="INVITE", code=0, ts=t0),
+        _row(lc, leg=1, method="INVITE", code=100, ts=t0 + timedelta(milliseconds=90)),
+    ]
     if lc.anomaly == "softphone_registration_failure" and random.random() < 0.5:
-        rows.append(_row(lc, leg=1, method="REGISTER", code=100, ts=ts - timedelta(milliseconds=200)))
-        rows.append(_row(lc, leg=1, method="REGISTER", code=code, ts=ts - timedelta(milliseconds=100)))
-    rows.append(_row(lc, leg=1, method="INVITE", code=code, ts=ts))
+        rows.extend([
+            _row(lc, leg=1, method="REGISTER", code=0, ts=t0 + timedelta(milliseconds=40)),
+            _row(lc, leg=1, method="REGISTER", code=100, ts=t0 + timedelta(milliseconds=120)),
+            _row(lc, leg=1, method="REGISTER", code=code, ts=t0 + timedelta(milliseconds=280)),
+        ])
+    rows.append(_row(lc, leg=1, method="INVITE", code=code, ts=t0 + timedelta(milliseconds=450)))
     return rows
 
 
-def _egress_failure(lc: LiveCall, ts: datetime) -> list[CDR]:
+def _egress_failure(lc: LiveCall) -> list[CDR]:
     code = lc.fail_code or 503
+    start = lc.started_at
+    fail_at = start + timedelta(seconds=lc.ring_sec if lc.ring_before_fail else random.uniform(0.8, 2.5))
     rows = [
-        _row(lc, leg=1, method="INVITE", code=100, ts=ts - timedelta(milliseconds=300)),
-        _row(lc, leg=2, method="INVITE", code=100, ts=ts - timedelta(milliseconds=250)),
+        _row(lc, leg=1, method="INVITE", code=0, ts=start),
+        _row(lc, leg=2, method="INVITE", code=0, ts=start + timedelta(milliseconds=random.randint(50, 160))),
+        _row(lc, leg=1, method="INVITE", code=100, ts=start + timedelta(milliseconds=random.randint(70, 200))),
+        _row(lc, leg=2, method="INVITE", code=100, ts=start + timedelta(milliseconds=random.randint(100, 260))),
     ]
     if lc.ring_before_fail:
+        ring_at = start + timedelta(seconds=random.uniform(1.2, 3.0))
         rows.extend([
-            _row(lc, leg=1, method="INVITE", code=180, ts=ts - timedelta(milliseconds=150)),
-            _row(lc, leg=2, method="INVITE", code=180, ts=ts - timedelta(milliseconds=120)),
+            _row(lc, leg=1, method="INVITE", code=180, ts=ring_at),
+            _row(lc, leg=2, method="INVITE", code=180, ts=ring_at + timedelta(milliseconds=random.randint(30, 90))),
         ])
     rows.extend([
-        _row(lc, leg=2, method="INVITE", code=code, ts=ts - timedelta(milliseconds=50)),
-        _row(lc, leg=1, method="INVITE", code=code, ts=ts),
+        _row(lc, leg=2, method="INVITE", code=code, ts=fail_at - timedelta(milliseconds=random.randint(40, 120))),
+        _row(lc, leg=1, method="INVITE", code=code, ts=fail_at),
     ])
     if lc.ring_before_fail and random.random() < 0.4:
-        rows.append(_row(lc, leg=1, method="CANCEL", code=487, ts=ts + timedelta(milliseconds=80)))
+        rows.append(_row(lc, leg=1, method="CANCEL", code=487, ts=fail_at + timedelta(milliseconds=random.randint(60, 200))))
     return rows
 
 
-def _successful_setup(lc: LiveCall, ts: datetime) -> list[CDR]:
+def _leg2_trunk_auth(lc: LiveCall, start: datetime) -> list[CDR]:
+    """407 Proxy-Authenticate on egress, then ACK with credentials."""
+    t407 = start + timedelta(milliseconds=random.randint(180, 420))
+    tack = t407 + timedelta(milliseconds=random.randint(30, 90))
     return [
-        _row(lc, leg=1, method="INVITE", code=100, ts=ts - timedelta(milliseconds=300)),
-        _row(lc, leg=2, method="INVITE", code=100, ts=ts - timedelta(milliseconds=250)),
-        _row(lc, leg=1, method="INVITE", code=180, ts=ts - timedelta(milliseconds=150)),
-        _row(lc, leg=2, method="INVITE", code=180, ts=ts - timedelta(milliseconds=120)),
-        _row(lc, leg=1, method="INVITE", code=200, ts=ts, dur=lc.duration_sec),
-        _row(lc, leg=2, method="INVITE", code=200, ts=ts + timedelta(milliseconds=50), dur=lc.duration_sec),
+        _row(lc, leg=2, method="INVITE", code=407, ts=t407),
+        _row(lc, leg=2, method="ACK", code=0, ts=tack),
     ]
 
 
-def _setup_cdrs(lc: LiveCall, ts: datetime) -> list[CDR]:
+def _setup_early_cdrs(lc: LiveCall) -> list[CDR]:
+    """Through 180 Ringing — emitted when the call is offered."""
+    if lc.failed:
+        return _setup_cdrs(lc)
+    start = lc.started_at
+    ring_early = start + timedelta(seconds=random.uniform(1.0, 3.5))
+    t_inv_l2 = start + timedelta(milliseconds=random.randint(45, 180))
+    t_try_l1 = start + timedelta(milliseconds=random.randint(70, 220))
+    t_try_l2 = t_inv_l2 + timedelta(milliseconds=random.randint(50, 180))
+    rows = [
+        _row(lc, leg=1, method="INVITE", code=0, ts=start),
+        _row(lc, leg=2, method="INVITE", code=0, ts=t_inv_l2),
+        _row(lc, leg=1, method="INVITE", code=100, ts=t_try_l1),
+        _row(lc, leg=2, method="INVITE", code=100, ts=t_try_l2),
+    ]
+    if lc.trunk_auth:
+        rows.extend(_leg2_trunk_auth(lc, start))
+        rows.append(_row(lc, leg=2, method="INVITE", code=100, ts=t_try_l2 + timedelta(milliseconds=random.randint(120, 280))))
+    rows.extend([
+        _row(lc, leg=1, method="INVITE", code=180, ts=ring_early),
+        _row(lc, leg=2, method="INVITE", code=180, ts=ring_early + timedelta(milliseconds=random.randint(25, 100))),
+    ])
+    return rows
+
+
+def _answer_cdrs(lc: LiveCall) -> list[CDR]:
+    """200 OK + ACK when callee answers."""
+    answer = lc.answered_at
+    return [
+        _row(lc, leg=1, method="INVITE", code=200, ts=answer, dur=lc.duration_sec),
+        _row(lc, leg=2, method="INVITE", code=200, ts=answer + timedelta(milliseconds=random.randint(30, 120)), dur=lc.duration_sec),
+        _row(lc, leg=1, method="ACK", code=0, ts=answer + timedelta(milliseconds=random.randint(40, 150))),
+        _row(lc, leg=2, method="ACK", code=0, ts=answer + timedelta(milliseconds=random.randint(80, 200))),
+    ]
+
+
+def _successful_setup(lc: LiveCall) -> list[CDR]:
+    return _setup_early_cdrs(lc) + _answer_cdrs(lc)
+
+
+def _setup_cdrs(lc: LiveCall) -> list[CDR]:
     if lc.failed and lc.fail_leg == 1:
-        return _ingress_auth_failure(lc, ts)
+        return _ingress_auth_failure(lc)
     if lc.failed and lc.fail_leg == 2:
-        return _egress_failure(lc, ts)
-    return _successful_setup(lc, ts)
+        return _egress_failure(lc)
+    return _successful_setup(lc)
 
 
 def _transfer_cdrs(lc: LiveCall, ts: datetime) -> list[CDR]:
@@ -361,11 +424,11 @@ def _seed_live_calls() -> None:
     with SessionLocal() as session:
         for _ in range(target):
             lc = _new_live_call(None, now=now)
-            remaining = random.randint(20, lc.duration_sec)
-            lc.end_at = now + timedelta(seconds=remaining)
-            lc.started_at = now - timedelta(seconds=lc.duration_sec - remaining + random.randint(2, 8))
-            lc.answered_at = lc.started_at + timedelta(seconds=random.randint(2, 8))
-            for row in _setup_cdrs(lc, lc.answered_at):
+            elapsed_talk = random.randint(30, min(lc.duration_sec, TALK_SEC_MAX))
+            lc.answered_at = now - timedelta(seconds=elapsed_talk)
+            lc.started_at = lc.answered_at - timedelta(seconds=lc.ring_sec)
+            lc.end_at = lc.answered_at + timedelta(seconds=lc.duration_sec)
+            for row in _setup_cdrs(lc):
                 session.add(row)
             _live[lc.call_id] = lc
         session.commit()
@@ -377,6 +440,14 @@ def tick_live_calls() -> None:
     now = datetime.utcnow()
 
     with SessionLocal() as session:
+        for call_id, lc in list(_pending.items()):
+            if now >= lc.answered_at:
+                if not lc.failed:
+                    for row in _answer_cdrs(lc):
+                        session.add(row)
+                    _live[call_id] = lc
+                del _pending[call_id]
+
         for call_id, lc in list(_live.items()):
             elapsed = (now - lc.answered_at).total_seconds()
             if lc.with_transfer and not lc.transfer_done and elapsed >= lc.duration_sec * 0.35:
@@ -394,15 +465,18 @@ def tick_live_calls() -> None:
                 del _live[call_id]
 
         target = random.randint(TARGET_ACTIVE_MIN, TARGET_ACTIVE_MAX)
-        deficit = target - len(_live)
+        deficit = target - len(_live) - len(_pending)
         if deficit > 0:
             n_start = min(deficit, random.randint(1, 3))
             for _ in range(n_start):
                 lc = _new_live_call(None, now=now)
-                for row in _setup_cdrs(lc, now):
-                    session.add(row)
-                if not lc.failed:
-                    _live[lc.call_id] = lc
+                if lc.failed:
+                    for row in _setup_cdrs(lc):
+                        session.add(row)
+                else:
+                    for row in _setup_early_cdrs(lc):
+                        session.add(row)
+                    _pending[lc.call_id] = lc
 
         session.commit()
 
@@ -414,13 +488,20 @@ def baseline_traffic() -> None:
 def generate_call_session(anomaly: str | None = None) -> list[CDR]:
     now = datetime.utcnow()
     lc = _new_live_call(anomaly, now=now)
-    rows = _setup_cdrs(lc, now)
+    if lc.failed:
+        lc.started_at = now - timedelta(seconds=lc.ring_sec if lc.ring_before_fail else random.randint(1, 3))
+    else:
+        lc.end_at = now
+        lc.answered_at = now - timedelta(seconds=random.randint(15, min(lc.duration_sec, 180)))
+        lc.started_at = lc.answered_at - timedelta(seconds=lc.ring_sec)
+    rows = _setup_cdrs(lc)
     if not lc.failed:
+        mid = lc.answered_at + timedelta(seconds=lc.duration_sec * 0.35)
         if lc.with_transfer:
-            rows.extend(_transfer_cdrs(lc, now + timedelta(seconds=1)))
+            rows.extend(_transfer_cdrs(lc, mid))
         if lc.with_voicemail:
-            rows.extend(_voicemail_cdrs(lc, now + timedelta(seconds=2)))
-        rows.extend(_teardown_cdrs(lc, now + timedelta(seconds=3)))
+            rows.extend(_voicemail_cdrs(lc, lc.answered_at + timedelta(seconds=lc.duration_sec * 0.55)))
+        rows.extend(_teardown_cdrs(lc, lc.end_at))
     return rows
 
 

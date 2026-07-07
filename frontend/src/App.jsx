@@ -126,7 +126,17 @@ function formatRelativeTime(isoString) {
 }
 
 function formatTime(isoString) {
-  return parseApiTime(isoString).toLocaleTimeString()
+  return parseApiTime(isoString).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+function formatSipCode(method, code) {
+  if (method === 'ACK' && code === 0) return 'ACK'
+  if (code === 0) return '→'
+  return String(code)
 }
 
 function formatAlertTime(isoString) {
@@ -358,6 +368,7 @@ const SIP_CODE_LABELS = {
   202: 'Accepted',
   401: 'Unauthorized',
   403: 'Forbidden',
+  407: 'Proxy Auth',
   408: 'Timeout',
   503: 'Unavailable',
 }
@@ -417,7 +428,9 @@ function SipEventRow({ ev, onSelect }) {
       {interactive && <span className="text-vibrantBlue w-24 shrink-0 truncate" title={ev.call_id}>{ev.call_id.slice(0, 10)}…</span>}
       <span className="text-vibrantBlue w-24 shrink-0">{legLabel(ev.leg, ev.direction)}</span>
       <span className="text-white w-20 shrink-0">{ev.sip_method}</span>
-      <span className={`w-12 shrink-0 ${ev.sip_code >= 400 ? 'text-neonRed font-bold' : 'text-green-400'}`}>{ev.sip_code}</span>
+      <span className={`w-12 shrink-0 ${ev.sip_code >= 400 ? 'text-neonRed font-bold' : ev.sip_code === 0 ? 'text-gray-500' : 'text-green-400'}`}>
+        {formatSipCode(ev.sip_method, ev.sip_code)}
+      </span>
       <span className="text-gray-400 uppercase w-16 shrink-0">{ev.direction}</span>
       <span className="text-gray-300 break-all">{ev.from_uri} → {ev.to_uri}</span>
       {ev.duration > 0 && <span className="text-gray-500 shrink-0">{ev.duration}s MOS {ev.mos}</span>}
@@ -587,7 +600,9 @@ function AlertDetailView({ alert, onSelectCall, onDismiss, dismissEnabled }) {
                   <td className="px-2 py-1 text-gray-500">{formatTime(r.time)}</td>
                   <td className="px-2 py-1 text-vibrantBlue hover:underline">{r.call_id.slice(0, 8)}…</td>
                   <td className="px-2 py-1 text-center">{r.sip_method}</td>
-                  <td className={`px-2 py-1 text-center ${r.sip_code >= 400 ? 'text-neonRed' : ''}`}>{r.sip_code}</td>
+                  <td className={`px-2 py-1 text-center ${r.sip_code >= 400 ? 'text-neonRed' : r.sip_code === 0 ? 'text-gray-500' : ''}`}>
+                    {formatSipCode(r.sip_method, r.sip_code)}
+                  </td>
                   <td className="px-2 py-1 text-gray-400 truncate max-w-xs">{r.from_uri} → {r.to_uri}</td>
                 </tr>
               ))}
@@ -772,7 +787,9 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
                   <td className="px-3 py-2">{row.sip_method}</td>
                   <td className="px-3 py-2 text-gray-300 max-w-[140px] truncate" title={row.from_uri}>{row.from_uri}</td>
                   <td className="px-3 py-2 text-gray-300 max-w-[140px] truncate" title={row.to_uri}>{row.to_uri}</td>
-                  <td className={`px-3 py-2 ${row.sip_code >= 400 ? 'text-neonRed font-bold' : ''}`}>{row.sip_code}</td>
+                  <td className={`px-3 py-2 ${row.sip_code >= 400 ? 'text-neonRed font-bold' : row.sip_code === 0 ? 'text-gray-500' : ''}`}>
+                    {formatSipCode(row.sip_method, row.sip_code)}
+                  </td>
                   <td className="px-3 py-2">{row.mos}</td>
                 </tr>
               ))}
