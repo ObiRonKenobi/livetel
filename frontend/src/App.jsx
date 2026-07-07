@@ -165,21 +165,43 @@ const MetricChart = memo(function MetricChart({ title, dataKey, color, data, uni
   )
 })
 
-function Modal({ title, onClose, children, wide }) {
+function Modal({ title, onClose, onBack, children, wide }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75" onClick={onClose}>
       <div
         className={`bg-panel border border-border rounded-xl max-h-[90vh] overflow-hidden flex flex-col ${wide ? 'w-full max-w-4xl' : 'w-full max-w-2xl'}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-          <h2 className="text-lg font-semibold text-vibrantBlue">{title}</h2>
-          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">&times;</button>
+        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-border">
+          <div className="flex items-center gap-3 min-w-0">
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="shrink-0 text-gray-400 hover:text-vibrantBlue text-sm font-medium flex items-center gap-1"
+                aria-label="Back"
+              >
+                <span className="text-lg leading-none">←</span>
+                <span className="hidden sm:inline">Back</span>
+              </button>
+            )}
+            <h2 className="text-lg font-semibold text-vibrantBlue truncate">{title}</h2>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none shrink-0">&times;</button>
         </div>
         <div className="overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   )
+}
+
+function drilldownTitle(frame) {
+  if (frame.type === 'alert') return alertTypeLabel(frame.alert.type).toUpperCase()
+  if (frame.type === 'sip-code') {
+    const label = SIP_CODE_LABELS[frame.sipCode] || 'Response'
+    return `SIP ${frame.sipCode} ${label} — last ${SIP_CODE_WINDOW_SECONDS}s`
+  }
+  return `SIP Call Flow — ${frame.callId}`
 }
 
 function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss }) {
@@ -362,7 +384,7 @@ function SipEventRow({ ev, onSelect }) {
   )
 }
 
-function SipCodeEventsModal({ sipCode, onClose, onSelectCall }) {
+function SipCodeEventsView({ sipCode, onSelectCall }) {
   const [events, setEvents] = useState(null)
   const label = SIP_CODE_LABELS[sipCode] || 'Response'
 
@@ -379,25 +401,21 @@ function SipCodeEventsModal({ sipCode, onClose, onSelectCall }) {
       .catch(() => setEvents([]))
   }, [sipCode])
 
+  if (events === null) return <p className="text-gray-500">Loading events…</p>
+  if (events.length === 0) {
+    return <p className="text-gray-500">No signaling events with code {sipCode} {label} in the last {SIP_CODE_WINDOW_SECONDS} seconds.</p>
+  }
   return (
-    <Modal title={`SIP ${sipCode} ${label} — last ${SIP_CODE_WINDOW_SECONDS}s`} onClose={onClose} wide>
-      {events === null && <p className="text-gray-500">Loading events…</p>}
-      {events !== null && events.length === 0 && (
-        <p className="text-gray-500">No signaling events with code {sipCode} in the last {SIP_CODE_WINDOW_SECONDS} seconds.</p>
-      )}
-      {events !== null && events.length > 0 && (
-        <div className="space-y-4">
-          <p className="text-sm text-gray-400">
-            {events.length} event{events.length === 1 ? '' : 's'} · click any row to open the full SIP call flow
-          </p>
-          <div className="max-h-[calc(100vh-280px)] overflow-y-auto space-y-1 pr-1">
-            {events.map((ev) => (
-              <SipEventRow key={ev.id} ev={ev} onSelect={onSelectCall} />
-            ))}
-          </div>
-        </div>
-      )}
-    </Modal>
+    <div className="space-y-4">
+      <p className="text-sm text-gray-400">
+        {events.length} event{events.length === 1 ? '' : 's'} · click any row to open the full SIP call flow
+      </p>
+      <div className="max-h-[calc(100vh-280px)] overflow-y-auto space-y-1 pr-1">
+        {events.map((ev) => (
+          <SipEventRow key={ev.id} ev={ev} onSelect={onSelectCall} />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -427,115 +445,133 @@ function CallFlowAlertSection({ alert: flowAlert }) {
   )
 }
 
-function CallFlowModal({ callId, onClose }) {
+function CallFlowView({ callId }) {
   const [flow, setFlow] = useState(null)
   useEffect(() => {
+    setFlow(null)
     fetch(`/api/calls/${callId}`).then((r) => r.json()).then(setFlow).catch(() => setFlow(null))
   }, [callId])
 
-  const hasAlerts = flow?.alerts?.length > 0
+  if (!flow) return <p className="text-gray-500">Loading…</p>
 
+  const hasAlerts = flow.alerts?.length > 0
   return (
-    <Modal title={`SIP Call Flow — ${callId}`} onClose={onClose} wide>
-      {!flow && <p className="text-gray-500">Loading…</p>}
-      {flow && (
-        <div className="space-y-4">
-          {hasAlerts && (
-            <div className="space-y-3">
-              <p className="text-xs text-gray-500 uppercase tracking-wide">
-                Correlated alert{flow.alerts.length === 1 ? '' : 's'} ({flow.alerts.length})
-              </p>
-              {flow.alerts.map((a) => (
-                <CallFlowAlertSection key={a.id} alert={a} />
-              ))}
-            </div>
-          )}
-          <p className="text-sm text-gray-400">
-            {flow.events.length} signaling event{flow.events.length === 1 ? '' : 's'}
-            {hasAlerts ? ' · alert-correlated legs highlighted below' : ' · includes INVITE, BYE, REFER (transfer), voicemail legs'}
+    <div className="space-y-4">
+      {hasAlerts && (
+        <div className="space-y-3">
+          <p className="text-xs text-gray-500 uppercase tracking-wide">
+            Correlated alert{flow.alerts.length === 1 ? '' : 's'} ({flow.alerts.length})
           </p>
-          <div className="space-y-2">
-            {flow.events.map((ev, i) => (
-              <SipEventRow key={ev.id || i} ev={ev} />
-            ))}
-          </div>
+          {flow.alerts.map((a) => (
+            <CallFlowAlertSection key={a.id} alert={a} />
+          ))}
         </div>
       )}
-    </Modal>
+      <p className="text-sm text-gray-400">
+        {flow.events.length} signaling event{flow.events.length === 1 ? '' : 's'}
+        {hasAlerts ? ' · alert-correlated legs highlighted below' : ' · includes INVITE, BYE, REFER (transfer), voicemail legs'}
+      </p>
+      <div className="space-y-2">
+        {flow.events.map((ev, i) => (
+          <SipEventRow key={ev.id || i} ev={ev} />
+        ))}
+      </div>
+    </div>
   )
 }
 
-function AlertDetailModal({ alert, onClose, onDismiss, onSelectCall }) {
+function AlertDetailView({ alert, onSelectCall, onDismiss }) {
   const [ctx, setCtx] = useState(null)
   useEffect(() => {
+    setCtx(null)
     fetch(`/api/alerts/${alert.id}/context`).then((r) => r.json()).then(setCtx).catch(() => setCtx(null))
   }, [alert.id])
 
   const st = severityStyle(severityFor(alert))
 
-  const dismiss = (status) => {
-    onDismiss(alert.id, status)
-    onClose()
-  }
+  if (!ctx) return <p className="text-gray-500">Loading analysis…</p>
 
   return (
-    <Modal title={alertTypeLabel(alert.type).toUpperCase()} onClose={onClose} wide>
-      {!ctx && <p className="text-gray-500">Loading analysis…</p>}
-      {ctx && (
-        <div className="space-y-5">
-          <div className={`p-4 rounded-lg border-l-4 ${st.border} bg-darkBg`}>
-            <span className={`text-xs font-bold uppercase ${st.text}`}>{ctx.alert.severity} · {formatAlertTime(ctx.alert.time)}</span>
-            <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap">{alertSummary(ctx.alert.details)}</p>
-          </div>
-          <div>
-            <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Root Cause</h3>
-            <p className="text-sm text-gray-300">{ctx.root_cause}</p>
-          </div>
-          <div>
-            <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Mitigation</h3>
-            <p className="text-sm text-gray-300 whitespace-pre-wrap">{ctx.mitigation}</p>
-          </div>
-          <div>
-            <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Correlated SIP Events ({ctx.related_events.length})</h3>
-            <p className="text-[10px] text-gray-500 mb-2">Click any row to view the full SIP call flow for that call ID.</p>
-            <div className="max-h-64 overflow-y-auto border border-border rounded-lg">
-              <table className="w-full text-xs font-mono">
-                <thead className="bg-darkBg text-gray-500 sticky top-0">
-                  <tr>
-                    <th className="px-2 py-2 text-left">Time</th>
-                    <th className="px-2 py-2 text-left">Call ID</th>
-                    <th className="px-2 py-2">Method</th>
-                    <th className="px-2 py-2">Code</th>
-                    <th className="px-2 py-2 text-left">From → To</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ctx.related_events.map((r) => (
-                    <tr
-                      key={r.id}
-                      onClick={() => onSelectCall(r.call_id)}
-                      className="border-t border-border/50 cursor-pointer hover:bg-vibrantBlue/5"
-                    >
-                      <td className="px-2 py-1 text-gray-500">{formatTime(r.time)}</td>
-                      <td className="px-2 py-1 text-vibrantBlue hover:underline">{r.call_id.slice(0, 8)}…</td>
-                      <td className="px-2 py-1 text-center">{r.sip_method}</td>
-                      <td className={`px-2 py-1 text-center ${r.sip_code >= 400 ? 'text-neonRed' : ''}`}>{r.sip_code}</td>
-                      <td className="px-2 py-1 text-gray-400 truncate max-w-xs">{r.from_uri} → {r.to_uri}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-3 pt-2 border-t border-border">
-            <button type="button" onClick={() => dismiss('resolved')} className="text-xs uppercase tracking-wide px-4 py-2 rounded-lg bg-green-500/20 text-green-400 hover:bg-green-500/30 font-semibold">
-              Mark resolved
-            </button>
-            <button type="button" onClick={() => dismiss('false_positive')} className="text-xs uppercase tracking-wide px-4 py-2 rounded-lg bg-gray-500/20 text-gray-400 hover:bg-gray-500/30 font-semibold">
-              False positive — dismiss
-            </button>
-          </div>
+    <div className="space-y-5">
+      <div className={`p-4 rounded-lg border-l-4 ${st.border} bg-darkBg`}>
+        <span className={`text-xs font-bold uppercase ${st.text}`}>{ctx.alert.severity} · {formatAlertTime(ctx.alert.time)}</span>
+        <p className="text-sm text-gray-200 mt-2 whitespace-pre-wrap">{alertSummary(ctx.alert.details)}</p>
+      </div>
+      <div>
+        <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Root Cause</h3>
+        <p className="text-sm text-gray-300">{ctx.root_cause}</p>
+      </div>
+      <div>
+        <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Mitigation</h3>
+        <p className="text-sm text-gray-300 whitespace-pre-wrap">{ctx.mitigation}</p>
+      </div>
+      <div>
+        <h3 className="text-sm font-bold text-vibrantBlue uppercase mb-2">Correlated SIP Events ({ctx.related_events.length})</h3>
+        <p className="text-[10px] text-gray-500 mb-2">Click any row to view the full SIP call flow for that call ID.</p>
+        <div className="max-h-64 overflow-y-auto border border-border rounded-lg">
+          <table className="w-full text-xs font-mono">
+            <thead className="bg-darkBg text-gray-500 sticky top-0">
+              <tr>
+                <th className="px-2 py-2 text-left">Time</th>
+                <th className="px-2 py-2 text-left">Call ID</th>
+                <th className="px-2 py-2">Method</th>
+                <th className="px-2 py-2">Code</th>
+                <th className="px-2 py-2 text-left">From → To</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ctx.related_events.map((r) => (
+                <tr
+                  key={r.id}
+                  onClick={() => onSelectCall(r.call_id)}
+                  className="border-t border-border/50 cursor-pointer hover:bg-vibrantBlue/5"
+                >
+                  <td className="px-2 py-1 text-gray-500">{formatTime(r.time)}</td>
+                  <td className="px-2 py-1 text-vibrantBlue hover:underline">{r.call_id.slice(0, 8)}…</td>
+                  <td className="px-2 py-1 text-center">{r.sip_method}</td>
+                  <td className={`px-2 py-1 text-center ${r.sip_code >= 400 ? 'text-neonRed' : ''}`}>{r.sip_code}</td>
+                  <td className="px-2 py-1 text-gray-400 truncate max-w-xs">{r.from_uri} → {r.to_uri}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
+      </div>
+      <div className="flex flex-wrap gap-3 pt-2 border-t border-border">
+        <button type="button" onClick={() => onDismiss(alert.id, 'resolved')} className="text-xs uppercase tracking-wide px-4 py-2 rounded-lg bg-green-500/20 text-green-400 hover:bg-green-500/30 font-semibold">
+          Mark resolved
+        </button>
+        <button type="button" onClick={() => onDismiss(alert.id, 'false_positive')} className="text-xs uppercase tracking-wide px-4 py-2 rounded-lg bg-gray-500/20 text-gray-400 hover:bg-gray-500/30 font-semibold">
+          False positive — dismiss
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function DrilldownModal({ stack, onClose, onBack, onPushCall, onDismissAlert }) {
+  if (!stack.length) return null
+  const current = stack[stack.length - 1]
+
+  return (
+    <Modal
+      title={drilldownTitle(current)}
+      onClose={onClose}
+      onBack={stack.length > 1 ? onBack : undefined}
+      wide
+    >
+      {current.type === 'alert' && (
+        <AlertDetailView
+          alert={current.alert}
+          onSelectCall={onPushCall}
+          onDismiss={(id, status) => { onDismissAlert(id, status); onClose() }}
+        />
+      )}
+      {current.type === 'sip-code' && (
+        <SipCodeEventsView sipCode={current.sipCode} onSelectCall={onPushCall} />
+      )}
+      {current.type === 'call' && (
+        <CallFlowView callId={current.callId} />
       )}
     </Modal>
   )
@@ -722,10 +758,24 @@ export default function App() {
   const [history, setHistory] = useState([])
   const [readIds, setReadIds] = useState(() => loadReadIds())
   const [newAlertPulse, setNewAlertPulse] = useState(false)
-  const [detailAlert, setDetailAlert] = useState(null)
-  const [selectedCallId, setSelectedCallId] = useState(null)
-  const [selectedSipCode, setSelectedSipCode] = useState(null)
+  const [drilldownStack, setDrilldownStack] = useState([])
   const prevUnread = useRef(0)
+
+  const openDrilldown = useCallback((frame) => {
+    setDrilldownStack([frame])
+  }, [])
+
+  const pushDrilldown = useCallback((frame) => {
+    setDrilldownStack((prev) => [...prev, frame])
+  }, [])
+
+  const popDrilldown = useCallback(() => {
+    setDrilldownStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : []))
+  }, [])
+
+  const closeDrilldown = useCallback(() => {
+    setDrilldownStack([])
+  }, [])
 
   const markRead = useCallback((id) => {
     setReadIds((prev) => {
@@ -765,8 +815,8 @@ export default function App() {
 
   const openAlertDetail = useCallback((alert) => {
     markRead(alert.id)
-    setDetailAlert(alert)
-  }, [markRead])
+    openDrilldown({ type: 'alert', alert })
+  }, [markRead, openDrilldown])
 
   const unreadCount = useMemo(() => alerts.filter((a) => !readIds.has(a.id)).length, [alerts, readIds])
 
@@ -886,7 +936,7 @@ export default function App() {
       {tab === 'overview' && (
         <>
           <AlertTicker alerts={alerts} unreadIds={readIds} onAlertClick={() => setTab('alerts')} />
-          <CompactSipCodes errorCodes={metrics.error_codes} onCodeClick={setSelectedSipCode} />
+          <CompactSipCodes errorCodes={metrics.error_codes} onCodeClick={(code) => openDrilldown({ type: 'sip-code', sipCode: code })} />
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
             {[
               { label: 'Avg MOS', status: status.mos, value: (metrics.avg_mos || 0).toFixed(2) },
@@ -930,25 +980,16 @@ export default function App() {
       )}
 
       {tab === 'cdr' && (
-        <CdrStreamTab search={cdrSearch} setSearch={setCdrSearch} onSelectCall={setSelectedCallId} />
+        <CdrStreamTab search={cdrSearch} setSearch={setCdrSearch} onSelectCall={(callId) => openDrilldown({ type: 'call', callId })} />
       )}
 
-      {detailAlert && (
-        <AlertDetailModal
-          alert={detailAlert}
-          onClose={() => setDetailAlert(null)}
-          onDismiss={dismissAlert}
-          onSelectCall={setSelectedCallId}
-        />
-      )}
-      {selectedCallId && <CallFlowModal callId={selectedCallId} onClose={() => setSelectedCallId(null)} />}
-      {selectedSipCode !== null && (
-        <SipCodeEventsModal
-          sipCode={selectedSipCode}
-          onClose={() => setSelectedSipCode(null)}
-          onSelectCall={setSelectedCallId}
-        />
-      )}
+      <DrilldownModal
+        stack={drilldownStack}
+        onClose={closeDrilldown}
+        onBack={popDrilldown}
+        onPushCall={(callId) => pushDrilldown({ type: 'call', callId })}
+        onDismissAlert={dismissAlert}
+      />
 
       <footer className="mt-8 text-center text-xs text-gray-600">Metrics {POLL_METRICS_MS / 1000}s · CDR {POLL_CDR_MS / 1000}s · Alerts {POLL_ALERTS_MS / 1000}s · 24h retention</footer>
     </div>
