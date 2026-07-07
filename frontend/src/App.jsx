@@ -16,6 +16,7 @@ const POLL_METRICS_MS = 4000
 const POLL_ALERTS_MS = 12000
 const POLL_CDR_MS = 5000
 const CHART_HISTORY_MINUTES = 60
+const SIP_CODE_WINDOW_SECONDS = 60
 const READ_KEY = 'livetel-read-alert-ids'
 const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
 
@@ -285,33 +286,108 @@ const SIP_CODE_LABELS = {
   503: 'Unavailable',
 }
 
-function CompactSipCodes({ errorCodes }) {
+function CompactSipCodes({ errorCodes, onCodeClick }) {
   const entries = Object.entries(errorCodes || {}).sort(([a], [b]) => Number(a) - Number(b))
   if (!entries.length) return null
   return (
     <div
-      className="bg-panel border border-border rounded-lg px-4 py-3"
+      className="bg-panel border border-border rounded-lg px-4 py-3 mb-4"
       title="Count of each SIP response code in signaling events from the last 60 seconds"
     >
       <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">
-        SIP response codes · last 60 seconds
+        SIP response codes · last {SIP_CODE_WINDOW_SECONDS} seconds
       </p>
       <div className="flex flex-wrap items-center gap-2">
         {entries.map(([code, count]) => {
           const n = Number(code)
           const label = SIP_CODE_LABELS[n] || 'Response'
           return (
-            <span
+            <button
               key={code}
-              className={`text-xs font-mono px-2 py-1 rounded ${n >= 400 ? 'bg-neonRed/20 text-neonRed' : 'bg-vibrantBlue/10 text-vibrantBlue'}`}
-              title={`${code} ${label}`}
+              type="button"
+              onClick={() => onCodeClick?.(n)}
+              className={`text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 hover:ring-vibrantBlue/40 ${n >= 400 ? 'bg-neonRed/20 text-neonRed' : 'bg-vibrantBlue/10 text-vibrantBlue'}`}
+              title={`View ${count} events with SIP ${code} ${label}`}
             >
               {code} {label}: {count}
-            </span>
+            </button>
           )
         })}
       </div>
+      <p className="text-[10px] text-gray-600 mt-2">Click a code to view matching signaling events</p>
     </div>
+  )
+}
+
+function SipEventRow({ ev, onSelect }) {
+  const interactive = Boolean(onSelect)
+  const className = `flex gap-3 items-start border-l-2 border-vibrantBlue/50 pl-3 py-2 font-mono text-xs ${
+    interactive ? 'cursor-pointer hover:bg-vibrantBlue/5 rounded-r' : ''
+  }`
+  const inner = (
+    <>
+      <span className="text-gray-500 w-16 shrink-0">{formatTime(ev.time)}</span>
+      {interactive && <span className="text-vibrantBlue w-24 shrink-0 truncate" title={ev.call_id}>{ev.call_id.slice(0, 10)}…</span>}
+      <span className="text-vibrantBlue w-16 shrink-0">Leg {ev.leg}</span>
+      <span className="text-white w-20 shrink-0">{ev.sip_method}</span>
+      <span className={`w-12 shrink-0 ${ev.sip_code >= 400 ? 'text-neonRed font-bold' : 'text-green-400'}`}>{ev.sip_code}</span>
+      <span className="text-gray-400 uppercase w-16 shrink-0">{ev.direction}</span>
+      <span className="text-gray-300 break-all">{ev.from_uri} → {ev.to_uri}</span>
+      {ev.duration > 0 && <span className="text-gray-500 shrink-0">{ev.duration}s MOS {ev.mos}</span>}
+    </>
+  )
+  if (!interactive) {
+    return <div className={className}>{inner}</div>
+  }
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(ev.call_id)}
+      onKeyDown={(e) => e.key === 'Enter' && onSelect(ev.call_id)}
+      className={className}
+    >
+      {inner}
+    </div>
+  )
+}
+
+function SipCodeEventsModal({ sipCode, onClose, onSelectCall }) {
+  const [events, setEvents] = useState(null)
+  const label = SIP_CODE_LABELS[sipCode] || 'Response'
+
+  useEffect(() => {
+    const params = new URLSearchParams({
+      sip_code: String(sipCode),
+      window_seconds: String(SIP_CODE_WINDOW_SECONDS),
+      page: '1',
+      page_size: '500',
+    })
+    fetch(`${CDRS_URL}?${params}`)
+      .then((r) => r.json())
+      .then((data) => setEvents(Array.isArray(data) ? data : (data.items || [])))
+      .catch(() => setEvents([]))
+  }, [sipCode])
+
+  return (
+    <Modal title={`SIP ${sipCode} ${label} — last ${SIP_CODE_WINDOW_SECONDS}s`} onClose={onClose} wide>
+      {events === null && <p className="text-gray-500">Loading events…</p>}
+      {events !== null && events.length === 0 && (
+        <p className="text-gray-500">No signaling events with code {sipCode} in the last {SIP_CODE_WINDOW_SECONDS} seconds.</p>
+      )}
+      {events !== null && events.length > 0 && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-400">
+            {events.length} event{events.length === 1 ? '' : 's'} · click any row to open the full SIP call flow
+          </p>
+          <div className="max-h-[calc(100vh-280px)] overflow-y-auto space-y-1 pr-1">
+            {events.map((ev) => (
+              <SipEventRow key={ev.id} ev={ev} onSelect={onSelectCall} />
+            ))}
+          </div>
+        </div>
+      )}
+    </Modal>
   )
 }
 
@@ -329,15 +405,7 @@ function CallFlowModal({ callId, onClose }) {
           <p className="text-sm text-gray-400">{flow.events.length} signaling events · includes INVITE, BYE, REFER (transfer), voicemail legs</p>
           <div className="space-y-2">
             {flow.events.map((ev, i) => (
-              <div key={ev.id || i} className="flex gap-3 items-start border-l-2 border-vibrantBlue/50 pl-3 py-2 font-mono text-xs">
-                <span className="text-gray-500 w-16 shrink-0">{formatTime(ev.time)}</span>
-                <span className="text-vibrantBlue w-16 shrink-0">Leg {ev.leg}</span>
-                <span className="text-white w-20 shrink-0">{ev.sip_method}</span>
-                <span className={`w-12 shrink-0 ${ev.sip_code >= 400 ? 'text-neonRed font-bold' : 'text-green-400'}`}>{ev.sip_code}</span>
-                <span className="text-gray-400 uppercase w-16 shrink-0">{ev.direction}</span>
-                <span className="text-gray-300 break-all">{ev.from_uri} → {ev.to_uri}</span>
-                {ev.duration > 0 && <span className="text-gray-500 shrink-0">{ev.duration}s MOS {ev.mos}</span>}
-              </div>
+              <SipEventRow key={ev.id || i} ev={ev} />
             ))}
           </div>
         </div>
@@ -605,6 +673,7 @@ export default function App() {
   const [newAlertPulse, setNewAlertPulse] = useState(false)
   const [detailAlert, setDetailAlert] = useState(null)
   const [selectedCallId, setSelectedCallId] = useState(null)
+  const [selectedSipCode, setSelectedSipCode] = useState(null)
   const prevUnread = useRef(0)
 
   const markRead = useCallback((id) => {
@@ -766,6 +835,7 @@ export default function App() {
       {tab === 'overview' && (
         <>
           <AlertTicker alerts={alerts} unreadIds={readIds} onAlertClick={() => setTab('alerts')} />
+          <CompactSipCodes errorCodes={metrics.error_codes} onCodeClick={setSelectedSipCode} />
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
             {[
               { label: 'Avg MOS', status: status.mos, value: (metrics.avg_mos || 0).toFixed(2) },
@@ -780,7 +850,6 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="mb-4"><CompactSipCodes errorCodes={metrics.error_codes} /></div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <MetricChart title="Latency" dataKey="avg_latency" color="#00d4ff" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
             <MetricChart title="Jitter" dataKey="avg_jitter" color="#a78bfa" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
@@ -822,6 +891,13 @@ export default function App() {
         />
       )}
       {selectedCallId && <CallFlowModal callId={selectedCallId} onClose={() => setSelectedCallId(null)} />}
+      {selectedSipCode !== null && (
+        <SipCodeEventsModal
+          sipCode={selectedSipCode}
+          onClose={() => setSelectedSipCode(null)}
+          onSelectCall={setSelectedCallId}
+        />
+      )}
 
       <footer className="mt-8 text-center text-xs text-gray-600">Metrics {POLL_METRICS_MS / 1000}s · CDR {POLL_CDR_MS / 1000}s · Alerts {POLL_ALERTS_MS / 1000}s · 24h retention</footer>
     </div>

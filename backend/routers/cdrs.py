@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api", tags=["cdrs"])
 
 MAX_CDR_PAGES = 10
 CDR_PAGE_SIZE = 100
+MAX_WINDOW_PAGE_SIZE = 500
 
 _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
 
@@ -158,31 +159,25 @@ def _resolve_alert_severity(
     return inherited
 
 
-@router.get("/cdrs", response_model=CdrListResponse)
-def get_cdrs(
-    db: Session = Depends(get_db),
-    search: str = Query(default="", max_length=100),
-    page: int = Query(default=1, ge=1, le=MAX_CDR_PAGES),
-    page_size: int = Query(default=CDR_PAGE_SIZE, ge=1, le=CDR_PAGE_SIZE),
+def _get_window_cdrs(
+    db: Session,
+    *,
+    sip_code: int | None,
+    window_seconds: int,
+    page: int,
+    page_size: int,
 ) -> CdrListResponse:
-    cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
+    cutoff = datetime.utcnow() - timedelta(seconds=window_seconds)
     query = db.query(CDR).filter(CDR.timestamp >= cutoff)
+    if sip_code is not None:
+        query = query.filter(CDR.sip_code == sip_code)
 
-    term = search.strip()
-    if term:
-        if _is_call_id_search(term):
-            query = query.filter(CDR.call_id.ilike(f"{term.lower()}%"))
-        else:
-            query = query.filter(_search_clause(term))
-
-    max_browsable = page_size * MAX_CDR_PAGES
-    total_in_db = query.count() if term else max_browsable
-    total_count = min(total_in_db, max_browsable)
-    total_pages = MAX_CDR_PAGES
-    safe_page = min(max(1, page), MAX_CDR_PAGES)
+    total_count = query.count()
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+    safe_page = min(max(1, page), total_pages)
     offset = (safe_page - 1) * page_size
 
-    rows = query.order_by(CDR.id.desc()).offset(offset).limit(page_size).all()
+    rows = query.order_by(CDR.timestamp.desc(), CDR.id.desc()).offset(offset).limit(page_size).all()
 
     call_ids = {r.call_id for r in rows}
     status_map = _build_call_status_map(call_ids)
@@ -202,6 +197,67 @@ def get_cdrs(
         items=items,
         page=safe_page,
         page_size=page_size,
+        total_pages=total_pages,
+        total_count=total_count,
+    )
+
+
+@router.get("/cdrs", response_model=CdrListResponse)
+def get_cdrs(
+    db: Session = Depends(get_db),
+    search: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=CDR_PAGE_SIZE, ge=1, le=MAX_WINDOW_PAGE_SIZE),
+    sip_code: int | None = Query(default=None, ge=100, le=699),
+    window_seconds: int | None = Query(default=None, ge=1, le=3600),
+) -> CdrListResponse:
+    if window_seconds is not None:
+        return _get_window_cdrs(
+            db,
+            sip_code=sip_code,
+            window_seconds=window_seconds,
+            page=page,
+            page_size=min(page_size, MAX_WINDOW_PAGE_SIZE),
+        )
+
+    cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
+    query = db.query(CDR).filter(CDR.timestamp >= cutoff)
+
+    term = search.strip()
+    if term:
+        if _is_call_id_search(term):
+            query = query.filter(CDR.call_id.ilike(f"{term.lower()}%"))
+        else:
+            query = query.filter(_search_clause(term))
+
+    max_browsable = page_size * MAX_CDR_PAGES
+    total_in_db = query.count() if term else max_browsable
+    total_count = min(total_in_db, max_browsable)
+    total_pages = MAX_CDR_PAGES
+    safe_page = min(max(1, page), MAX_CDR_PAGES)
+    safe_page_size = min(page_size, CDR_PAGE_SIZE)
+    offset = (safe_page - 1) * safe_page_size
+
+    rows = query.order_by(CDR.id.desc()).offset(offset).limit(safe_page_size).all()
+
+    call_ids = {r.call_id for r in rows}
+    status_map = _build_call_status_map(call_ids)
+    windows = _alert_windows(db)
+    alert_by_call = _alert_severity_by_call_id(db, call_ids, windows)
+
+    items = [
+        _cdr_to_response(
+            r,
+            call_status=status_map.get(r.call_id, "completed"),
+            alert_severity=_resolve_alert_severity(r, windows, alert_by_call),
+        )
+        for r in rows
+    ]
+
+    return CdrListResponse(
+        items=items,
+        page=safe_page,
+        page_size=safe_page_size,
         total_pages=total_pages,
         total_count=total_count,
     )
