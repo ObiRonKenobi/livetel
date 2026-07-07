@@ -1017,7 +1017,7 @@ export default function App() {
               { label: 'Latency', status: status.latency, value: `${metrics.avg_latency} ms` },
               { label: 'Jitter', status: status.latency, value: `${metrics.avg_jitter} ms` },
               { label: 'Packet Loss', status: status.packetLoss, value: `${metrics.avg_packet_loss}%` },
-              { label: 'SIP Health', status: status.sipErrors, value: status.sipErrors === 'good' ? 'Normal' : 'Elevated' },
+              { label: 'SIP Health', status: status.sipErrors, value: status.sipErrors === 'good' ? 'Normal' : 'Attention Needed' },
             ].map(({ label, status: s, value }) => (
               <div key={label} className="bg-panel border border-border rounded-lg px-2.5 py-2 flex items-center gap-2">
                 <StatusDot status={s} />
