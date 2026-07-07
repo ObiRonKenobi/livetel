@@ -219,6 +219,53 @@ def _cdr_matches_anomaly(cdr: CDR, alert_type: str) -> bool:
     return False
 
 
+def _is_tracker_sip_code(code: int) -> bool:
+    """Terminal SIP failures for Overview tracker — not auth challenges (401/407)."""
+    return code >= 400 and code not in _AUTH_CHALLENGE_CODES
+
+
+def _collect_alert_tracker_cdrs(
+    db: Session,
+    open_alerts: list[Alert],
+    *,
+    sip_code: int | None = None,
+) -> list[CDR]:
+    """CDR legs with terminal SIP codes correlated to open alerts."""
+    if not open_alerts:
+        return []
+    seen: set[int] = set()
+    matched: list[CDR] = []
+    for alert in open_alerts:
+        start, end = _correlation_window(alert)
+        rows = (
+            db.query(CDR)
+            .filter(CDR.timestamp >= start, CDR.timestamp <= end)
+            .all()
+        )
+        for cdr in rows:
+            if cdr.id in seen:
+                continue
+            if sip_code is not None and cdr.sip_code != sip_code:
+                continue
+            if not _is_tracker_sip_code(cdr.sip_code):
+                continue
+            if not _cdr_matches_anomaly(cdr, alert.type):
+                continue
+            seen.add(cdr.id)
+            matched.append(cdr)
+    matched.sort(key=lambda r: (r.timestamp, r.leg, r.id), reverse=True)
+    return matched
+
+
+def _alert_tracker_error_codes(db: Session, open_alerts: list[Alert]) -> dict[str, int]:
+    """Counts per terminal SIP code tied to open alerts — clears when alerts dismiss."""
+    counts: dict[str, int] = {}
+    for cdr in _collect_alert_tracker_cdrs(db, open_alerts):
+        key = str(cdr.sip_code)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _cdr_alert_severity(cdr: CDR, open_alerts: list[Alert]) -> str | None:
     """Per-row severity: open alert whose burst window contains this leg and matches its type."""
     best: str | None = None
@@ -349,23 +396,27 @@ def _get_window_cdrs(
     window_seconds: int,
     page: int,
     page_size: int,
+    alert_correlated: bool = False,
 ) -> CdrListResponse:
-    cutoff = datetime.utcnow() - timedelta(seconds=window_seconds)
-    query = db.query(CDR).filter(CDR.timestamp >= cutoff)
-    if sip_code is not None:
-        query = query.filter(CDR.sip_code == sip_code)
+    open_alerts = _open_alerts_cached(db)
+    if alert_correlated:
+        rows = _collect_alert_tracker_cdrs(db, open_alerts, sip_code=sip_code)
+    else:
+        cutoff = datetime.utcnow() - timedelta(seconds=window_seconds)
+        query = db.query(CDR).filter(CDR.timestamp >= cutoff)
+        if sip_code is not None:
+            query = query.filter(CDR.sip_code == sip_code)
+        rows = query.order_by(CDR.timestamp.desc(), CDR.id.desc()).all()
 
-    total_count = query.count()
+    total_count = len(rows)
     total_pages = max(1, (total_count + page_size - 1) // page_size)
     safe_page = min(max(1, page), total_pages)
     offset = (safe_page - 1) * page_size
+    page_rows = rows[offset : offset + page_size]
 
-    rows = query.order_by(CDR.timestamp.desc(), CDR.id.desc()).offset(offset).limit(page_size).all()
-
-    call_ids = {r.call_id for r in rows}
+    call_ids = {r.call_id for r in page_rows}
     status_map = _call_dispositions(db, call_ids)
-    open_alerts = _open_alerts_cached(db)
-    severities = _alert_severities_for_rows(rows, open_alerts)
+    severities = _alert_severities_for_rows(page_rows, open_alerts)
 
     items = [
         _cdr_to_response(
@@ -373,7 +424,7 @@ def _get_window_cdrs(
             call_status=status_map.get(r.call_id, "completed"),
             alert_severity=severities.get(r.id),
         )
-        for r in rows
+        for r in page_rows
     ]
 
     return CdrListResponse(
@@ -393,14 +444,16 @@ def get_cdrs(
     page_size: int = Query(default=CDR_PAGE_SIZE, ge=1, le=MAX_WINDOW_PAGE_SIZE),
     sip_code: int | None = Query(default=None, ge=100, le=699),
     window_seconds: int | None = Query(default=None, ge=1, le=3600),
+    alert_correlated: bool = Query(default=False),
 ) -> CdrListResponse:
-    if window_seconds is not None:
+    if window_seconds is not None or alert_correlated:
         return _get_window_cdrs(
             db,
             sip_code=sip_code,
-            window_seconds=window_seconds,
+            window_seconds=window_seconds or 60,
             page=page,
             page_size=min(page_size, MAX_WINDOW_PAGE_SIZE),
+            alert_correlated=alert_correlated,
         )
 
     cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)

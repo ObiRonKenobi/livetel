@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_db
 from models import CDR
+from routers.cdrs import _alert_tracker_error_codes, _open_alerts_cached
 from schemas import MetricsHistoryPoint, MetricsHistoryResponse, MetricsResponse
 from services.generator import active_call_count, avg_call_duration_sec
 
@@ -100,13 +101,8 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
     cutoff = datetime.utcnow() - timedelta(seconds=settings.metrics_window_seconds)
     averages = _qos_averages(db, cutoff)
 
-    error_rows = (
-        db.query(CDR.sip_code, func.count())
-        .filter(CDR.timestamp >= cutoff, CDR.sip_code >= 100)
-        .group_by(CDR.sip_code)
-        .all()
-    )
-    error_codes = {str(code): count for code, count in error_rows}
+    open_alerts = _open_alerts_cached(db)
+    error_codes = _alert_tracker_error_codes(db, open_alerts)
 
     if averages is None:
         return MetricsResponse(

@@ -139,6 +139,31 @@ function formatSipCode(method, code) {
   return String(code)
 }
 
+/** 401/407 are auth challenges (RFC 3665), not call failures. */
+const SIP_AUTH_CHALLENGE_CODES = new Set([401, 407])
+
+function isSipAuthChallenge(code) {
+  return SIP_AUTH_CHALLENGE_CODES.has(code)
+}
+
+function isSipTerminalError(code) {
+  return code >= 400 && !isSipAuthChallenge(code)
+}
+
+function sipCodeCellClass(code) {
+  if (code === 0) return 'text-gray-500'
+  if (isSipAuthChallenge(code)) return 'text-yellow-400'
+  if (isSipTerminalError(code)) return 'text-neonRed font-bold'
+  return ''
+}
+
+function sipCodeFlowClass(code) {
+  if (code === 0) return 'text-gray-500'
+  if (isSipAuthChallenge(code)) return 'text-yellow-400'
+  if (isSipTerminalError(code)) return 'text-neonRed font-bold'
+  return 'text-green-400'
+}
+
 function formatAlertTime(isoString) {
   const d = parseApiTime(isoString)
   if (Number.isNaN(d.getTime())) return '—'
@@ -262,8 +287,8 @@ function Modal({ title, onClose, onBack, children, wide, chart }) {
 function drilldownTitle(frame) {
   if (frame.type === 'alert') return alertTypeLabel(frame.alert.type).toUpperCase()
   if (frame.type === 'sip-code') {
-    const label = SIP_CODE_LABELS[frame.sipCode] || 'Response'
-    return `SIP ${frame.sipCode} ${label} — last ${SIP_CODE_WINDOW_SECONDS}s`
+    const label = SIP_CODE_LABELS[frame.sipCode] || 'Error'
+    return `SIP ${frame.sipCode} ${label} — open alert evidence`
   }
   return `SIP Call Flow — ${frame.callId}`
 }
@@ -378,34 +403,34 @@ const SIP_CODE_LABELS = {
 function CompactSipCodes({ errorCodes, onCodeClick }) {
   const entries = Object.entries(errorCodes || {})
     .map(([code, count]) => [Number(code), count])
-    .filter(([code]) => code >= 100)
+    .filter(([code, count]) => isSipTerminalError(code) && count > 0)
     .sort(([a], [b]) => a - b)
   if (!entries.length) return null
   return (
     <div
-      className="shrink-0 bg-panel border border-border rounded-lg px-3 py-2"
-      title="Count of each SIP response code in signaling events from the last 60 seconds"
+      className="shrink-0 bg-panel border border-neonRed/30 rounded-lg px-3 py-2"
+      title="Terminal SIP error codes correlated to open alerts — dismiss alert to clear"
     >
       <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
-        SIP response codes · last {SIP_CODE_WINDOW_SECONDS} seconds
+        Open alerts · SIP error codes
       </p>
       <div className="flex flex-wrap items-center gap-2">
         {entries.map(([n, count]) => {
-          const label = SIP_CODE_LABELS[n] || 'Response'
+          const label = SIP_CODE_LABELS[n] || 'Error'
           return (
             <button
               key={n}
               type="button"
               onClick={() => onCodeClick?.(n)}
-              className={`text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 hover:ring-vibrantBlue/40 ${n >= 400 ? 'bg-neonRed/20 text-neonRed' : 'bg-vibrantBlue/10 text-vibrantBlue'}`}
-              title={`View ${count} events with SIP ${n} ${label}`}
+              className="text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 hover:ring-neonRed/40 bg-neonRed/20 text-neonRed"
+              title={`View ${count} alert-correlated events with SIP ${n} ${label}`}
             >
               {n} {label}: {count}
             </button>
           )
         })}
       </div>
-      <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">Click a code to view matching signaling events</p>
+      <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">Clears when related alerts are resolved or marked false positive</p>
     </div>
   )
 }
@@ -432,7 +457,7 @@ function SipEventRow({ ev, onSelect }) {
       {interactive && <span className="text-vibrantBlue w-24 shrink-0 truncate" title={ev.call_id}>{ev.call_id.slice(0, 10)}…</span>}
       <span className="text-vibrantBlue w-24 shrink-0">{legLabel(ev.leg, ev.direction)}</span>
       <span className="text-white w-20 shrink-0">{ev.sip_method}</span>
-      <span className={`w-12 shrink-0 ${ev.sip_code >= 400 ? 'text-neonRed font-bold' : ev.sip_code === 0 ? 'text-gray-500' : 'text-green-400'}`}>
+      <span className={`w-12 shrink-0 ${sipCodeFlowClass(ev.sip_code)}`}>
         {formatSipCode(ev.sip_method, ev.sip_code)}
       </span>
       <span className="text-gray-400 uppercase w-16 shrink-0">{ev.direction}</span>
@@ -468,7 +493,7 @@ function SipCodeEventsView({ sipCode, onSelectCall }) {
   useEffect(() => {
     const params = new URLSearchParams({
       sip_code: String(sipCode),
-      window_seconds: String(SIP_CODE_WINDOW_SECONDS),
+      alert_correlated: 'true',
       page: '1',
       page_size: '500',
     })
@@ -480,12 +505,12 @@ function SipCodeEventsView({ sipCode, onSelectCall }) {
 
   if (events === null) return <p className="text-gray-500">Loading events…</p>
   if (events.length === 0) {
-    return <p className="text-gray-500">No signaling events with code {sipCode} {label} in the last {SIP_CODE_WINDOW_SECONDS} seconds.</p>
+    return <p className="text-gray-500">No alert-correlated signaling events with code {sipCode} {label}.</p>
   }
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-400">
-        {events.length} event{events.length === 1 ? '' : 's'} · click any row to open the full SIP call flow
+        {events.length} alert-correlated event{events.length === 1 ? '' : 's'} · click any row to open the full SIP call flow
       </p>
       <div className="max-h-[calc(100vh-280px)] overflow-y-auto space-y-1 pr-1">
         {events.map((ev) => (
@@ -621,7 +646,7 @@ function AlertDetailView({ alert, onSelectCall, onDismiss, dismissEnabled }) {
                   <td className="px-2 py-1 text-gray-500">{formatTime(r.time)}</td>
                   <td className="px-2 py-1 text-vibrantBlue hover:underline">{r.call_id.slice(0, 8)}…</td>
                   <td className="px-2 py-1 text-center">{r.sip_method}</td>
-                  <td className={`px-2 py-1 text-center ${r.sip_code >= 400 ? 'text-neonRed' : r.sip_code === 0 ? 'text-gray-500' : ''}`}>
+                  <td className={`px-2 py-1 text-center ${sipCodeCellClass(r.sip_code)}`}>
                     {formatSipCode(r.sip_method, r.sip_code)}
                   </td>
                   <td className="px-2 py-1 text-gray-400 truncate max-w-xs">{r.from_uri} → {r.to_uri}</td>
@@ -833,7 +858,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
                   <td className="px-3 py-2">{row.sip_method}</td>
                   <td className="px-3 py-2 text-gray-300 max-w-[140px] truncate" title={row.from_uri}>{row.from_uri}</td>
                   <td className="px-3 py-2 text-gray-300 max-w-[140px] truncate" title={row.to_uri}>{row.to_uri}</td>
-                  <td className={`px-3 py-2 ${row.sip_code >= 400 ? 'text-neonRed font-bold' : row.sip_code === 0 ? 'text-gray-500' : ''}`}>
+                  <td className={`px-3 py-2 ${sipCodeCellClass(row.sip_code)}`}>
                     {formatSipCode(row.sip_method, row.sip_code)}
                   </td>
                   <td className="px-3 py-2">{row.mos}</td>
@@ -1025,7 +1050,7 @@ export default function App() {
     latency: metrics.avg_latency > 200 ? 'bad' : metrics.avg_latency > 100 ? 'warn' : 'good',
     packetLoss: metrics.avg_packet_loss > 5 ? 'bad' : metrics.avg_packet_loss > 2 ? 'warn' : 'good',
     mos: mosStatus(metrics.avg_mos || 0),
-    sipErrors: Object.entries(metrics.error_codes || {}).some(([c, n]) => Number(c) >= 400 && n > 5) ? 'bad' : 'good',
+    sipErrors: Object.entries(metrics.error_codes || {}).some(([, n]) => n > 0) ? 'bad' : 'good',
   }), [metrics])
 
 
