@@ -120,6 +120,12 @@ def monitor_and_alert() -> None:
         details = template_analysis(anomaly, data)
         session.add(Alert(type=anomaly, severity=severity, details=details))
         session.commit()
+        try:
+            from routers.cdrs import invalidate_alert_windows_cache
+
+            invalidate_alert_windows_cache()
+        except Exception:
+            pass
         logger.info("SIP alert created for %s", anomaly)
 
 

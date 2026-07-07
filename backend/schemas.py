@@ -64,6 +64,7 @@ class CallFlowAlertInfo(BaseModel):
 
 class SipFlowResponse(BaseModel):
     call_id: str
+    call_phase: str = "completed"  # ringing | active | completed | failed
     events: list[CdrResponse]
     alerts: list[CallFlowAlertInfo] = []
 

@@ -25,7 +25,7 @@ scheduler = BackgroundScheduler()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     ensure_schema()
-    scheduler.add_job(baseline_traffic, "interval", seconds=1, id="baseline_traffic")
+    scheduler.add_job(baseline_traffic, "interval", seconds=0.5, id="baseline_traffic")
     scheduler.add_job(inject_anomaly, "interval", minutes=5, id="inject_anomaly")
     scheduler.add_job(monitor_and_alert, "interval", seconds=30, id="monitor_and_alert")
     scheduler.add_job(prune_old_data, "interval", minutes=15, id="prune_old_data")

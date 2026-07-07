@@ -18,10 +18,13 @@ SBC_URI = "sbc@livetel.net"
 
 TARGET_ACTIVE_MIN = 100
 TARGET_ACTIVE_MAX = 150
-RING_SEC_MIN = 8
-RING_SEC_MAX = 25
-TALK_SEC_MIN = 120
-TALK_SEC_MAX = 720
+RING_180_SEC_MIN = 8   # seconds of 180 Ringing before answer
+RING_180_SEC_MAX = 24
+SETUP_SEC_MIN = 0.8    # INVITE/100/(407) before first 180
+SETUP_SEC_MAX = 3.5
+SETUP_AUTH_SEC_MAX = 4.5
+TALK_SEC_MIN = 120     # 2 minutes connected talk
+TALK_SEC_MAX = 720     # 12 minutes connected talk
 TRUNK_AUTH_CHANCE = 0.18
 
 # Failures on egress (carrier/trunk) — leg 1 may ring, leg 2 rejects.
@@ -71,6 +74,7 @@ class LiveCall:
     qos: dict[str, float]
     qos_leg2: dict[str, float] = field(default_factory=dict)
     ring_sec: int = 12
+    ring_at: datetime = field(default_factory=datetime.utcnow)
     duration_sec: int = 0
     started_at: datetime = field(default_factory=datetime.utcnow)
     answered_at: datetime = field(default_factory=datetime.utcnow)
@@ -85,10 +89,12 @@ class LiveCall:
     fail_code: int | None = None
     ring_before_fail: bool = False
     trunk_auth: bool = False
+    queued_cdrs: list[CDR] = field(default_factory=list)
 
 
 _live: dict[str, LiveCall] = {}
-_pending: dict[str, LiveCall] = {}  # ringing; answer CDRs emitted when answered_at reached
+_pending: dict[str, LiveCall] = {}  # ringing; answer CDRs when answered_at reached
+_emitting: dict[str, LiveCall] = {}  # failed / staggered setup until queue drained
 _seeded = False
 
 
@@ -97,7 +103,7 @@ def active_call_count() -> int:
 
 
 def active_call_ids() -> set[str]:
-    return set(_live.keys())
+    return set(_live.keys()) | set(_pending.keys()) | set(_emitting.keys())
 
 
 def avg_call_duration_sec() -> float:
@@ -190,7 +196,8 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
     qos = _baseline_qos()
     qos_leg2 = dict(qos)
     if anomaly and anomaly in _QOS_ANOMALIES:
-        qos_leg2 = _apply_qos_anomaly(qos, anomaly)
+        qos = _apply_qos_anomaly(qos, anomaly)
+        qos_leg2 = dict(qos)
 
     failed, fail_leg, fail_code, _, ring_before_fail = _failure_plan(anomaly)
     if anomaly == "auth_failure":
@@ -198,11 +205,23 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
         qos_leg2 = dict(qos)
 
     duration_sec = random.randint(TALK_SEC_MIN, TALK_SEC_MAX) if not failed else 0
-    ring_sec = random.randint(RING_SEC_MIN, RING_SEC_MAX) if not failed else random.randint(4, 12)
-    started_at = now
-    answered_at = now + timedelta(seconds=ring_sec) if not failed else now
-    end_at = answered_at + timedelta(seconds=duration_sec) if not failed else now
     trunk_auth = not failed and random.random() < TRUNK_AUTH_CHANCE
+    started_at = now
+    if failed:
+        ring_sec = random.randint(4, 12)
+        ring_at = started_at
+        answered_at = started_at
+        end_at = started_at
+    else:
+        setup_sec = random.uniform(
+            max(SETUP_SEC_MIN, 1.5 if trunk_auth else SETUP_SEC_MIN),
+            SETUP_AUTH_SEC_MAX if trunk_auth else SETUP_SEC_MAX,
+        )
+        ring_180_sec = random.randint(RING_180_SEC_MIN, RING_180_SEC_MAX)
+        ring_at = started_at + timedelta(seconds=setup_sec)
+        answered_at = ring_at + timedelta(seconds=ring_180_sec)
+        end_at = answered_at + timedelta(seconds=duration_sec)
+        ring_sec = int((answered_at - started_at).total_seconds())
 
     return LiveCall(
         call_id=uuid.uuid4().hex[:16],
@@ -213,6 +232,7 @@ def _new_live_call(anomaly: str | None, *, now: datetime | None = None) -> LiveC
         qos=qos,
         qos_leg2=qos_leg2,
         ring_sec=ring_sec,
+        ring_at=ring_at,
         duration_sec=duration_sec,
         started_at=started_at,
         answered_at=answered_at,
@@ -297,8 +317,22 @@ def _egress_failure(lc: LiveCall) -> list[CDR]:
         _row(lc, leg=1, method="INVITE", code=0, ts=start),
         _row(lc, leg=2, method="INVITE", code=0, ts=start + timedelta(milliseconds=random.randint(50, 160))),
         _row(lc, leg=1, method="INVITE", code=100, ts=start + timedelta(milliseconds=random.randint(70, 200))),
-        _row(lc, leg=2, method="INVITE", code=100, ts=start + timedelta(milliseconds=random.randint(100, 260))),
     ]
+    if lc.trunk_auth:
+        t407 = start + timedelta(milliseconds=random.randint(200, 450))
+        tack = t407 + timedelta(milliseconds=random.randint(30, 90))
+        treinvite = tack + timedelta(milliseconds=random.randint(50, 120))
+        ttry2 = treinvite + timedelta(milliseconds=random.randint(60, 180))
+        rows.extend([
+            _row(lc, leg=2, method="INVITE", code=407, ts=t407),
+            _row(lc, leg=2, method="ACK", code=0, ts=tack),
+            _row(lc, leg=2, method="INVITE", code=0, ts=treinvite),
+            _row(lc, leg=2, method="INVITE", code=100, ts=ttry2),
+        ])
+    else:
+        rows.append(
+            _row(lc, leg=2, method="INVITE", code=100, ts=start + timedelta(milliseconds=random.randint(100, 260)))
+        )
     if lc.ring_before_fail:
         ring_at = start + timedelta(seconds=random.uniform(1.2, 3.0))
         rows.extend([
@@ -314,38 +348,44 @@ def _egress_failure(lc: LiveCall) -> list[CDR]:
     return rows
 
 
-def _leg2_trunk_auth(lc: LiveCall, start: datetime) -> list[CDR]:
-    """407 Proxy-Authenticate on egress, then ACK with credentials."""
-    t407 = start + timedelta(milliseconds=random.randint(180, 420))
-    tack = t407 + timedelta(milliseconds=random.randint(30, 90))
-    return [
-        _row(lc, leg=2, method="INVITE", code=407, ts=t407),
-        _row(lc, leg=2, method="ACK", code=0, ts=tack),
-    ]
-
-
 def _setup_early_cdrs(lc: LiveCall) -> list[CDR]:
     """Through 180 Ringing — emitted when the call is offered."""
     if lc.failed:
         return _setup_cdrs(lc)
     start = lc.started_at
-    ring_early = start + timedelta(seconds=random.uniform(1.0, 3.5))
+    ring_early = lc.ring_at
     t_inv_l2 = start + timedelta(milliseconds=random.randint(45, 180))
     t_try_l1 = start + timedelta(milliseconds=random.randint(70, 220))
-    t_try_l2 = t_inv_l2 + timedelta(milliseconds=random.randint(50, 180))
+
     rows = [
         _row(lc, leg=1, method="INVITE", code=0, ts=start),
         _row(lc, leg=2, method="INVITE", code=0, ts=t_inv_l2),
         _row(lc, leg=1, method="INVITE", code=100, ts=t_try_l1),
-        _row(lc, leg=2, method="INVITE", code=100, ts=t_try_l2),
     ]
     if lc.trunk_auth:
-        rows.extend(_leg2_trunk_auth(lc, start))
-        rows.append(_row(lc, leg=2, method="INVITE", code=100, ts=t_try_l2 + timedelta(milliseconds=random.randint(120, 280))))
+        # RFC 3665: INVITE → 407 → ACK → re-INVITE (with credentials) → 100 → …
+        t407 = start + timedelta(milliseconds=random.randint(200, 450))
+        tack = t407 + timedelta(milliseconds=random.randint(30, 90))
+        treinvite = tack + timedelta(milliseconds=random.randint(50, 120))
+        ttry2 = treinvite + timedelta(milliseconds=random.randint(60, 180))
+        rows.extend([
+            _row(lc, leg=2, method="INVITE", code=407, ts=t407),
+            _row(lc, leg=2, method="ACK", code=0, ts=tack),
+            _row(lc, leg=2, method="INVITE", code=0, ts=treinvite),
+            _row(lc, leg=2, method="INVITE", code=100, ts=ttry2),
+        ])
+    else:
+        rows.append(
+            _row(lc, leg=2, method="INVITE", code=100, ts=t_inv_l2 + timedelta(milliseconds=random.randint(50, 180)))
+        )
     rows.extend([
         _row(lc, leg=1, method="INVITE", code=180, ts=ring_early),
         _row(lc, leg=2, method="INVITE", code=180, ts=ring_early + timedelta(milliseconds=random.randint(25, 100))),
     ])
+    if lc.direction == "outbound" and random.random() < 0.35:
+        # Early media / SDP on egress (common on outbound through SBC)
+        t183 = ring_early - timedelta(milliseconds=random.randint(80, 350))
+        rows.insert(-2, _row(lc, leg=2, method="INVITE", code=183, ts=t183))
     return rows
 
 
@@ -361,7 +401,26 @@ def _answer_cdrs(lc: LiveCall) -> list[CDR]:
 
 
 def _successful_setup(lc: LiveCall) -> list[CDR]:
-    return _setup_early_cdrs(lc) + _answer_cdrs(lc)
+    early = _setup_early_cdrs(lc)
+    if lc.trunk_auth:
+        # Authenticated re-INVITE path continues after early rows
+        start = lc.started_at
+        ring_early = lc.ring_at
+        treinvite = start + timedelta(milliseconds=random.randint(500, 900))
+        ttry2 = treinvite + timedelta(milliseconds=random.randint(60, 180))
+        # Replace early auth slice with full RFC 3665 sequence for completed sessions
+        early = [
+            _row(lc, leg=1, method="INVITE", code=0, ts=start),
+            _row(lc, leg=2, method="INVITE", code=0, ts=start + timedelta(milliseconds=random.randint(45, 180))),
+            _row(lc, leg=1, method="INVITE", code=100, ts=start + timedelta(milliseconds=random.randint(70, 220))),
+            _row(lc, leg=2, method="INVITE", code=407, ts=start + timedelta(milliseconds=random.randint(200, 450))),
+            _row(lc, leg=2, method="ACK", code=0, ts=start + timedelta(milliseconds=random.randint(280, 540))),
+            _row(lc, leg=2, method="INVITE", code=0, ts=treinvite),
+            _row(lc, leg=2, method="INVITE", code=100, ts=ttry2),
+            _row(lc, leg=1, method="INVITE", code=180, ts=ring_early),
+            _row(lc, leg=2, method="INVITE", code=180, ts=ring_early + timedelta(milliseconds=random.randint(25, 100))),
+        ]
+    return early + _answer_cdrs(lc)
 
 
 def _setup_cdrs(lc: LiveCall) -> list[CDR]:
@@ -414,6 +473,72 @@ def _teardown_cdrs(lc: LiveCall, ts: datetime) -> list[CDR]:
     ]
 
 
+def _queue_cdrs(lc: LiveCall, rows: list[CDR]) -> None:
+    lc.queued_cdrs.extend(rows)
+    lc.queued_cdrs.sort(key=lambda r: (r.timestamp, r.leg, r.sip_method, r.sip_code))
+
+
+def _emit_due(session, lc: LiveCall, now: datetime) -> None:
+    """Insert queued CDR rows whose SIP timestamp has arrived (real-time drip)."""
+    if not lc.queued_cdrs:
+        return
+    due: list[CDR] = []
+    future: list[CDR] = []
+    for row in lc.queued_cdrs:
+        if row.timestamp <= now:
+            due.append(row)
+        else:
+            future.append(row)
+    for row in due:
+        session.add(row)
+    lc.queued_cdrs = future
+
+
+def _backdate_completed_call(lc: LiveCall, *, end_at: datetime) -> None:
+    """Align ring/answer/end for historical or in-flight seeded sessions."""
+    lc.end_at = end_at
+    lc.answered_at = lc.end_at - timedelta(seconds=lc.duration_sec)
+    ring_180_sec = random.randint(RING_180_SEC_MIN, RING_180_SEC_MAX)
+    lc.ring_at = lc.answered_at - timedelta(seconds=ring_180_sec)
+    setup_sec = random.uniform(
+        max(SETUP_SEC_MIN, 1.5 if lc.trunk_auth else SETUP_SEC_MIN),
+        SETUP_AUTH_SEC_MAX if lc.trunk_auth else SETUP_SEC_MAX,
+    )
+    lc.started_at = lc.ring_at - timedelta(seconds=setup_sec)
+    lc.ring_sec = int((lc.answered_at - lc.started_at).total_seconds())
+
+
+def _cluster_session_near(lc: LiveCall, *, end_at: datetime) -> None:
+    """Pack a completed session near end_at so alert correlation windows include all legs."""
+    lc.end_at = end_at
+    talk = random.randint(20, min(75, lc.duration_sec))
+    lc.duration_sec = talk
+    lc.answered_at = lc.end_at - timedelta(seconds=talk)
+    ring_180_sec = random.randint(RING_180_SEC_MIN, RING_180_SEC_MAX)
+    lc.ring_at = lc.answered_at - timedelta(seconds=ring_180_sec)
+    setup_sec = random.uniform(
+        max(SETUP_SEC_MIN, 1.5 if lc.trunk_auth else SETUP_SEC_MIN),
+        SETUP_AUTH_SEC_MAX if lc.trunk_auth else SETUP_SEC_MAX,
+    )
+    lc.started_at = lc.ring_at - timedelta(seconds=setup_sec)
+    lc.ring_sec = int((lc.answered_at - lc.started_at).total_seconds())
+
+
+def _cluster_failed_session_near(lc: LiveCall, *, end_at: datetime) -> None:
+    """Failed burst sessions finish near end_at (alert injection window)."""
+    lc.end_at = end_at
+    lc.answered_at = end_at
+    if lc.ring_before_fail:
+        span = random.uniform(5, min(max(lc.ring_sec, 6), 14))
+        lc.started_at = end_at - timedelta(seconds=span)
+        lc.ring_at = lc.started_at + timedelta(seconds=random.uniform(1.0, 2.8))
+    else:
+        span = random.uniform(1.5, 4.5)
+        lc.started_at = end_at - timedelta(seconds=span)
+        lc.ring_at = lc.started_at
+    lc.ring_sec = int((lc.end_at - lc.started_at).total_seconds())
+
+
 def _seed_live_calls() -> None:
     global _seeded
     if _seeded:
@@ -425,9 +550,7 @@ def _seed_live_calls() -> None:
         for _ in range(target):
             lc = _new_live_call(None, now=now)
             elapsed_talk = random.randint(30, min(lc.duration_sec, TALK_SEC_MAX))
-            lc.answered_at = now - timedelta(seconds=elapsed_talk)
-            lc.started_at = lc.answered_at - timedelta(seconds=lc.ring_sec)
-            lc.end_at = lc.answered_at + timedelta(seconds=lc.duration_sec)
+            _backdate_completed_call(lc, end_at=now + timedelta(seconds=lc.duration_sec - elapsed_talk))
             for row in _setup_cdrs(lc):
                 session.add(row)
             _live[lc.call_id] = lc
@@ -440,42 +563,45 @@ def tick_live_calls() -> None:
     now = datetime.utcnow()
 
     with SessionLocal() as session:
+        for call_id, lc in list(_emitting.items()):
+            _emit_due(session, lc, now)
+            if not lc.queued_cdrs:
+                del _emitting[call_id]
+
         for call_id, lc in list(_pending.items()):
+            _emit_due(session, lc, now)
             if now >= lc.answered_at:
-                if not lc.failed:
-                    for row in _answer_cdrs(lc):
-                        session.add(row)
-                    _live[call_id] = lc
+                _queue_cdrs(lc, _answer_cdrs(lc))
+                _emit_due(session, lc, now)
+                _live[call_id] = lc
                 del _pending[call_id]
 
         for call_id, lc in list(_live.items()):
+            _emit_due(session, lc, now)
             elapsed = (now - lc.answered_at).total_seconds()
             if lc.with_transfer and not lc.transfer_done and elapsed >= lc.duration_sec * 0.35:
                 lc.transfer_done = True
-                for row in _transfer_cdrs(lc, now):
-                    session.add(row)
+                _queue_cdrs(lc, _transfer_cdrs(lc, now))
             if lc.with_voicemail and not lc.voicemail_done and elapsed >= lc.duration_sec * 0.55:
                 lc.voicemail_done = True
-                for row in _voicemail_cdrs(lc, now):
-                    session.add(row)
+                _queue_cdrs(lc, _voicemail_cdrs(lc, now))
 
             if now >= lc.end_at:
-                for row in _teardown_cdrs(lc, now):
-                    session.add(row)
+                _queue_cdrs(lc, _teardown_cdrs(lc, lc.end_at))
+                _emit_due(session, lc, now)
                 del _live[call_id]
 
         target = random.randint(TARGET_ACTIVE_MIN, TARGET_ACTIVE_MAX)
-        deficit = target - len(_live) - len(_pending)
+        deficit = target - len(_live) - len(_pending) - len(_emitting)
         if deficit > 0:
             n_start = min(deficit, random.randint(1, 3))
             for _ in range(n_start):
                 lc = _new_live_call(None, now=now)
                 if lc.failed:
-                    for row in _setup_cdrs(lc):
-                        session.add(row)
+                    _queue_cdrs(lc, _setup_cdrs(lc))
+                    _emitting[lc.call_id] = lc
                 else:
-                    for row in _setup_early_cdrs(lc):
-                        session.add(row)
+                    _queue_cdrs(lc, _setup_early_cdrs(lc))
                     _pending[lc.call_id] = lc
 
         session.commit()
@@ -485,15 +611,16 @@ def baseline_traffic() -> None:
     tick_live_calls()
 
 
-def generate_call_session(anomaly: str | None = None) -> list[CDR]:
+def generate_call_session(anomaly: str | None = None, *, burst_end: datetime | None = None) -> list[CDR]:
     now = datetime.utcnow()
     lc = _new_live_call(anomaly, now=now)
+    finish = burst_end or now
     if lc.failed:
-        lc.started_at = now - timedelta(seconds=lc.ring_sec if lc.ring_before_fail else random.randint(1, 3))
+        _cluster_failed_session_near(lc, end_at=finish)
+    elif anomaly:
+        _cluster_session_near(lc, end_at=finish)
     else:
-        lc.end_at = now
-        lc.answered_at = now - timedelta(seconds=random.randint(15, min(lc.duration_sec, 180)))
-        lc.started_at = lc.answered_at - timedelta(seconds=lc.ring_sec)
+        _backdate_completed_call(lc, end_at=finish)
     rows = _setup_cdrs(lc)
     if not lc.failed:
         mid = lc.answered_at + timedelta(seconds=lc.duration_sec * 0.35)
@@ -508,16 +635,25 @@ def generate_call_session(anomaly: str | None = None) -> list[CDR]:
 def inject_anomaly() -> None:
     anomaly_key = random.choice(list(ANOMALIES.keys()))
     meta = ANOMALIES[anomaly_key]
+    burst_at = datetime.utcnow()
     with SessionLocal() as session:
         for _ in range(random.randint(8, 15)):
-            for cdr in generate_call_session(anomaly=anomaly_key):
+            finish = burst_at - timedelta(seconds=random.uniform(0, 35))
+            for cdr in generate_call_session(anomaly=anomaly_key, burst_end=finish):
                 session.add(cdr)
         session.add(
             Alert(
+                timestamp=burst_at,
                 type=anomaly_key,
                 severity=meta.severity,
                 details=f"{meta.label} detected — correlated SIP events in telemetry window.",
             )
         )
         session.commit()
+    try:
+        from routers.cdrs import invalidate_alert_windows_cache
+
+        invalidate_alert_windows_cache()
+    except Exception:
+        pass
     logger.info("Injected %s (%s) anomaly burst", anomaly_key, meta.severity)

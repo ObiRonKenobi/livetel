@@ -19,8 +19,8 @@ router = APIRouter(prefix="/api", tags=["cdrs"])
 MAX_CDR_PAGES = 10
 CDR_PAGE_SIZE = 100
 MAX_WINDOW_PAGE_SIZE = 500
-ALERT_CORRELATION_BEFORE_SECONDS = 90
-ALERT_CORRELATION_AFTER_SECONDS = 30
+ALERT_CORRELATION_BEFORE_SECONDS = 150
+ALERT_CORRELATION_AFTER_SECONDS = 45
 
 _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
 _CALL_ID_EXACT_RE = re.compile(r"^[a-f0-9]{16}$", re.I)
@@ -117,8 +117,31 @@ def _search_clause(raw: str):
     return or_(*clauses)
 
 
+_AUTH_CHALLENGE_CODES = {401, 407}
+
+
+def _call_flow_phase(status: str, rows: list[CDR]) -> str:
+    """UI phase for SIP ladder — in-progress calls lack BYE until teardown."""
+    has_bye = any(r.sip_method == "BYE" for r in rows)
+    has_200 = any(r.sip_method == "INVITE" and r.sip_code == 200 for r in rows)
+    has_terminal_fail = any(
+        (r.sip_method == "INVITE" and r.sip_code >= 400 and r.sip_code not in _AUTH_CHALLENGE_CODES)
+        or (r.sip_method == "CANCEL" and r.sip_code >= 400)
+        for r in rows
+    )
+    if has_bye:
+        return "completed"
+    if has_terminal_fail:
+        return "failed"
+    if status == "active":
+        return "active" if has_200 else "ringing"
+    if status == "failed":
+        return "failed"
+    return "completed"
+
+
 def _call_dispositions(db: Session, call_ids: set[str]) -> dict[str, str]:
-    """active = in live pool; failed = INVITE rejected (4xx/5xx, no 200); else completed."""
+    """active = live or ringing in generator; failed = terminal INVITE/CANCEL error; else completed."""
     if not call_ids:
         return {}
     live = active_call_ids()
@@ -133,17 +156,28 @@ def _call_dispositions(db: Session, call_ids: set[str]) -> dict[str, str]:
         return result
 
     rows = (
-        db.query(CDR.call_id, CDR.sip_code)
-        .filter(CDR.call_id.in_(remaining), CDR.sip_method == "INVITE")
+        db.query(CDR.call_id, CDR.sip_method, CDR.sip_code)
+        .filter(CDR.call_id.in_(remaining))
         .all()
     )
     invite_codes: dict[str, list[int]] = {}
-    for call_id, code in rows:
-        invite_codes.setdefault(call_id, []).append(code)
+    has_bye: set[str] = set()
+    has_cancel_fail: set[str] = set()
+    for call_id, method, code in rows:
+        if method == "INVITE":
+            invite_codes.setdefault(call_id, []).append(code)
+        elif method == "BYE":
+            has_bye.add(call_id)
+        elif method == "CANCEL" and code >= 400:
+            has_cancel_fail.add(call_id)
 
     for cid in remaining:
         codes = invite_codes.get(cid, [])
-        if codes and any(c >= 400 for c in codes) and not any(c == 200 for c in codes):
+        if cid in has_bye or any(c == 200 for c in codes):
+            result[cid] = "completed"
+        elif cid in has_cancel_fail or any(
+            c >= 400 and c not in _AUTH_CHALLENGE_CODES for c in codes
+        ):
             result[cid] = "failed"
         else:
             result[cid] = "completed"
@@ -194,11 +228,19 @@ def _cdr_alert_severity(cdr: CDR, open_alerts: list[Alert]) -> str | None:
             continue
         if not _cdr_matches_anomaly(cdr, alert.type):
             continue
-        if alert.severity == "critical":
+        sev = alert.severity if alert.severity in ("critical", "warning") else "warning"
+        if sev == "critical":
             return "critical"
         if best != "critical":
-            best = alert.severity
+            best = sev
     return best
+
+
+def _alert_severities_for_rows(rows: list[CDR], open_alerts: list[Alert]) -> dict[int, str | None]:
+    """Batch alert icons for a CDR page — same rules as _cdr_alert_severity."""
+    if not rows or not open_alerts:
+        return {r.id: None for r in rows}
+    return {r.id: _cdr_alert_severity(r, open_alerts) for r in rows}
 
 
 def _fetch_open_alerts(db: Session) -> list[Alert]:
@@ -323,12 +365,13 @@ def _get_window_cdrs(
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
     open_alerts = _open_alerts_cached(db)
+    severities = _alert_severities_for_rows(rows, open_alerts)
 
     items = [
         _cdr_to_response(
             r,
             call_status=status_map.get(r.call_id, "completed"),
-            alert_severity=_cdr_alert_severity(r, open_alerts),
+            alert_severity=severities.get(r.id),
         )
         for r in rows
     ]
@@ -383,12 +426,13 @@ def get_cdrs(
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
     open_alerts = _open_alerts_cached(db)
+    severities = _alert_severities_for_rows(rows, open_alerts)
 
     items = [
         _cdr_to_response(
             r,
             call_status=status_map.get(r.call_id, "completed"),
-            alert_severity=_cdr_alert_severity(r, open_alerts),
+            alert_severity=severities.get(r.id),
         )
         for r in rows
     ]
@@ -424,15 +468,18 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
 
     cid = rows[0].call_id
     status = _call_dispositions(db, {cid}).get(cid, "completed")
+    phase = _call_flow_phase(status, rows)
     open_alerts = _open_alerts_cached(db)
+    severities = _alert_severities_for_rows(rows, open_alerts)
 
     return SipFlowResponse(
         call_id=cid,
+        call_phase=phase,
         events=[
             _cdr_to_response(
                 r,
                 call_status=status,
-                alert_severity=_cdr_alert_severity(r, open_alerts),
+                alert_severity=severities.get(r.id),
             )
             for r in rows
         ],

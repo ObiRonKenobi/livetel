@@ -15,7 +15,7 @@ const CDR_MAX_PAGES = 10
 const CDR_BROWSE_MAX = CDR_PAGE_SIZE * CDR_MAX_PAGES
 const POLL_METRICS_MS = 4000
 const POLL_ALERTS_MS = 12000
-const POLL_CDR_MS = 5000
+const POLL_CDR_MS = 1500
 const CHART_HISTORY_MINUTES = 60
 const SIP_CODE_WINDOW_SECONDS = 60
 const READ_KEY = 'livetel-read-alert-ids'
@@ -364,17 +364,22 @@ function AlertStatsBar({ stats }) {
 const SIP_CODE_LABELS = {
   100: 'Trying',
   180: 'Ringing',
+  183: 'Session Progress',
   200: 'OK',
   202: 'Accepted',
   401: 'Unauthorized',
   403: 'Forbidden',
   407: 'Proxy Auth',
   408: 'Timeout',
+  487: 'Terminated',
   503: 'Unavailable',
 }
 
 function CompactSipCodes({ errorCodes, onCodeClick }) {
-  const entries = Object.entries(errorCodes || {}).sort(([a], [b]) => Number(a) - Number(b))
+  const entries = Object.entries(errorCodes || {})
+    .map(([code, count]) => [Number(code), count])
+    .filter(([code]) => code >= 100)
+    .sort(([a], [b]) => a - b)
   if (!entries.length) return null
   return (
     <div
@@ -385,18 +390,17 @@ function CompactSipCodes({ errorCodes, onCodeClick }) {
         SIP response codes · last {SIP_CODE_WINDOW_SECONDS} seconds
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        {entries.map(([code, count]) => {
-          const n = Number(code)
+        {entries.map(([n, count]) => {
           const label = SIP_CODE_LABELS[n] || 'Response'
           return (
             <button
-              key={code}
+              key={n}
               type="button"
               onClick={() => onCodeClick?.(n)}
               className={`text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 hover:ring-vibrantBlue/40 ${n >= 400 ? 'bg-neonRed/20 text-neonRed' : 'bg-vibrantBlue/10 text-vibrantBlue'}`}
-              title={`View ${count} events with SIP ${code} ${label}`}
+              title={`View ${count} events with SIP ${n} ${label}`}
             >
-              {code} {label}: {count}
+              {n} {label}: {count}
             </button>
           )
         })}
@@ -516,16 +520,33 @@ function CallFlowAlertSection({ alert: flowAlert }) {
 
 function CallFlowView({ callId }) {
   const [flow, setFlow] = useState(null)
+
+  const loadFlow = () => {
+    fetch(`/api/calls/${callId}`).then((r) => r.json()).then(setFlow).catch(() => setFlow(null))
+  }
+
   useEffect(() => {
     setFlow(null)
-    fetch(`/api/calls/${callId}`).then((r) => r.json()).then(setFlow).catch(() => setFlow(null))
+    loadFlow()
   }, [callId])
+
+  useEffect(() => {
+    if (!flow || flow.call_phase === 'completed' || flow.call_phase === 'failed') return
+    const id = setInterval(loadFlow, 2000)
+    return () => clearInterval(id)
+  }, [callId, flow?.call_phase])
 
   if (!flow) return <p className="text-gray-500">Loading…</p>
 
   const hasAlerts = flow.alerts?.length > 0
+  const inProgress = flow.call_phase === 'ringing' || flow.call_phase === 'active'
   return (
     <div className="space-y-4">
+      {inProgress && (
+        <p className="text-xs text-yellow-400/90 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2">
+          Call in progress — answer (200 OK / ACK) and teardown (BYE) events appear as the session completes.
+        </p>
+      )}
       {hasAlerts && (
         <div className="space-y-6">
           {flow.alerts.map((a) => (
@@ -691,13 +712,34 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
   const [cdrs, setCdrs] = useState([])
   const [page, setPage] = useState(1)
   const [cdrMeta, setCdrMeta] = useState({ total_pages: CDR_MAX_PAGES, total_count: 0, page_size: CDR_PAGE_SIZE })
+  const [paused, setPaused] = useState(false)
   const scrollRef = useRef(null)
+  const pausedRef = useRef(false)
   const searching = search.trim().length > 0
 
   useEffect(() => {
     setPage(1)
+    pausedRef.current = false
+    setPaused(false)
     if (scrollRef.current) scrollRef.current.scrollTop = 0
   }, [search])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = () => {
+      const atTop = el.scrollTop <= 2
+      if (atTop && pausedRef.current) {
+        pausedRef.current = false
+        setPaused(false)
+      } else if (!atTop && !pausedRef.current) {
+        pausedRef.current = true
+        setPaused(true)
+      }
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
 
   useEffect(() => {
     const fetchCdrs = async () => {
@@ -707,6 +749,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
         const res = await fetch(`${CDRS_URL}?${params}`)
         const data = await res.json()
         const items = Array.isArray(data) ? data : (data.items || [])
+        if (pausedRef.current && page === 1 && !searching) return
         setCdrs(items)
         setCdrMeta({
           total_pages: data.total_pages ?? CDR_MAX_PAGES,
@@ -716,11 +759,11 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
       } catch { /* keep */ }
     }
     fetchCdrs()
-    if (page === 1 && !searching) {
+    if (page === 1 && !searching && !paused) {
       const id = setInterval(fetchCdrs, POLL_CDR_MS)
       return () => clearInterval(id)
     }
-  }, [search, searching, page])
+  }, [search, searching, page, paused])
 
   const goPage = (p) => {
     setPage(p)
@@ -751,6 +794,9 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
         <span className="text-neonRed">●</span> failed / disconnected
         <span className="mx-2">·</span>
         <span className="text-neonRed">▲</span> alert-correlated row
+        {paused && page === 1 && !searching && (
+          <span className="ml-3 text-yellow-400/90">Updates paused — scroll to top to resume</span>
+        )}
       </p>
       <div className="flex-1 min-h-0 flex flex-col bg-panel border border-border rounded-lg overflow-hidden">
         <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">

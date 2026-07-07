@@ -102,7 +102,7 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
 
     error_rows = (
         db.query(CDR.sip_code, func.count())
-        .filter(CDR.timestamp >= cutoff)
+        .filter(CDR.timestamp >= cutoff, CDR.sip_code >= 100)
         .group_by(CDR.sip_code)
         .all()
     )
