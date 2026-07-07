@@ -321,9 +321,14 @@ function CompactSipCodes({ errorCodes, onCodeClick }) {
 
 function SipEventRow({ ev, onSelect }) {
   const interactive = Boolean(onSelect)
-  const className = `flex gap-3 items-start border-l-2 border-vibrantBlue/50 pl-3 py-2 font-mono text-xs ${
+  const alertBorder = ev.alert_severity === 'critical'
+    ? 'border-neonRed'
+    : ev.alert_severity === 'warning'
+      ? 'border-yellow-400'
+      : 'border-vibrantBlue/50'
+  const className = `flex gap-3 items-start border-l-2 ${alertBorder} pl-3 py-2 font-mono text-xs ${
     interactive ? 'cursor-pointer hover:bg-vibrantBlue/5 rounded-r' : ''
-  }`
+  } ${ev.alert_severity === 'critical' ? 'bg-neonRed/5' : ev.alert_severity === 'warning' ? 'bg-yellow-500/5' : ''}`
   const inner = (
     <>
       <span className="text-gray-500 w-16 shrink-0">{formatTime(ev.time)}</span>
@@ -334,6 +339,11 @@ function SipEventRow({ ev, onSelect }) {
       <span className="text-gray-400 uppercase w-16 shrink-0">{ev.direction}</span>
       <span className="text-gray-300 break-all">{ev.from_uri} → {ev.to_uri}</span>
       {ev.duration > 0 && <span className="text-gray-500 shrink-0">{ev.duration}s MOS {ev.mos}</span>}
+      {ev.alert_severity && (
+        <span className={`shrink-0 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${ev.alert_severity === 'critical' ? 'bg-neonRed/20 text-neonRed' : 'bg-yellow-500/20 text-yellow-400'}`}>
+          alert
+        </span>
+      )}
     </>
   )
   if (!interactive) {
@@ -391,18 +401,59 @@ function SipCodeEventsModal({ sipCode, onClose, onSelectCall }) {
   )
 }
 
+function CallFlowAlertSection({ alert: flowAlert }) {
+  const st = severityStyle(severityFor(flowAlert))
+  return (
+    <div className={`rounded-lg border border-border border-l-4 ${st.border} bg-darkBg p-4 space-y-3`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded ${st.badge}`}>
+          {flowAlert.severity}
+        </span>
+        <span className={`text-xs font-bold uppercase ${st.text}`}>{alertTypeLabel(flowAlert.type)}</span>
+        <span className="text-xs text-gray-500 tabular-nums">{formatAlertTime(flowAlert.time)}</span>
+      </div>
+      {flowAlert.summary && (
+        <p className="text-sm text-gray-200 whitespace-pre-wrap">{flowAlert.summary}</p>
+      )}
+      <div>
+        <h3 className="text-xs font-bold text-vibrantBlue uppercase mb-1">Root Cause</h3>
+        <p className="text-sm text-gray-300">{flowAlert.root_cause}</p>
+      </div>
+      <div>
+        <h3 className="text-xs font-bold text-vibrantBlue uppercase mb-1">Mitigation</h3>
+        <p className="text-sm text-gray-300 whitespace-pre-wrap">{flowAlert.mitigation}</p>
+      </div>
+    </div>
+  )
+}
+
 function CallFlowModal({ callId, onClose }) {
   const [flow, setFlow] = useState(null)
   useEffect(() => {
     fetch(`/api/calls/${callId}`).then((r) => r.json()).then(setFlow).catch(() => setFlow(null))
   }, [callId])
 
+  const hasAlerts = flow?.alerts?.length > 0
+
   return (
     <Modal title={`SIP Call Flow — ${callId}`} onClose={onClose} wide>
       {!flow && <p className="text-gray-500">Loading…</p>}
       {flow && (
         <div className="space-y-4">
-          <p className="text-sm text-gray-400">{flow.events.length} signaling events · includes INVITE, BYE, REFER (transfer), voicemail legs</p>
+          {hasAlerts && (
+            <div className="space-y-3">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">
+                Correlated alert{flow.alerts.length === 1 ? '' : 's'} ({flow.alerts.length})
+              </p>
+              {flow.alerts.map((a) => (
+                <CallFlowAlertSection key={a.id} alert={a} />
+              ))}
+            </div>
+          )}
+          <p className="text-sm text-gray-400">
+            {flow.events.length} signaling event{flow.events.length === 1 ? '' : 's'}
+            {hasAlerts ? ' · alert-correlated legs highlighted below' : ' · includes INVITE, BYE, REFER (transfer), voicemail legs'}
+          </p>
           <div className="space-y-2">
             {flow.events.map((ev, i) => (
               <SipEventRow key={ev.id || i} ev={ev} />

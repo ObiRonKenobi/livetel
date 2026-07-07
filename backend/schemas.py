@@ -52,9 +52,20 @@ class CdrListResponse(BaseModel):
     total_count: int
 
 
+class CallFlowAlertInfo(BaseModel):
+    id: int
+    time: str
+    type: str
+    severity: str
+    summary: str
+    root_cause: str
+    mitigation: str
+
+
 class SipFlowResponse(BaseModel):
     call_id: str
     events: list[CdrResponse]
+    alerts: list[CallFlowAlertInfo] = []
 
 
 class AlertResponse(BaseModel):

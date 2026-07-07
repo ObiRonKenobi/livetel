@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import get_db
 from models import Alert, CDR
-from schemas import CdrListResponse, CdrResponse, SipFlowResponse
+from schemas import CallFlowAlertInfo, CdrListResponse, CdrResponse, SipFlowResponse
+from services.anomalies import ANOMALIES, LEGACY_KEY_MAP
 from services.generator import active_call_ids
+from services.template_analysis import template_mitigation, template_root_cause
 
 router = APIRouter(prefix="/api", tags=["cdrs"])
 
@@ -159,6 +161,73 @@ def _resolve_alert_severity(
     return inherited
 
 
+def _alert_summary(details: str) -> str:
+    idx = details.find("Root cause:")
+    return (details[:idx] if idx >= 0 else details).strip()
+
+
+def _parse_alert_details(details: str) -> tuple[str, str]:
+    root = ""
+    mit = ""
+    if "Root cause:" in details:
+        after = details.split("Root cause:", 1)[1]
+        if "Immediate mitigation:" in after:
+            root, mit = after.split("Immediate mitigation:", 1)
+        else:
+            root = after
+    return root.strip(), mit.strip()
+
+
+def _normalize_alert_type(alert_type: str) -> str:
+    base = alert_type.removeprefix("AI_")
+    return LEGACY_KEY_MAP.get(base, base)
+
+
+def _alerts_for_call(db: Session, cdr_rows: list[CDR]) -> list[CallFlowAlertInfo]:
+    if not cdr_rows:
+        return []
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    times = [r.timestamp for r in cdr_rows]
+    alerts = (
+        db.query(Alert)
+        .filter(
+            Alert.timestamp >= cutoff,
+            not_(or_(Alert.type.like("AI_%"), Alert.type == "AI_error")),
+        )
+        .order_by(Alert.timestamp.desc())
+        .all()
+    )
+
+    matched: list[CallFlowAlertInfo] = []
+    for alert in alerts:
+        window_start = alert.timestamp - timedelta(seconds=90)
+        window_end = alert.timestamp + timedelta(seconds=30)
+        if not any(window_start <= ts <= window_end for ts in times):
+            continue
+
+        root, mit = _parse_alert_details(alert.details)
+        if not root:
+            base_type = _normalize_alert_type(alert.type)
+            meta = ANOMALIES.get(base_type)
+            label = meta.label if meta else base_type.replace("_", " ").title()
+            root = template_root_cause(base_type, label)
+        if not mit:
+            mit = template_mitigation(_normalize_alert_type(alert.type))
+
+        matched.append(
+            CallFlowAlertInfo(
+                id=alert.id,
+                time=alert.timestamp.isoformat() + "Z",
+                type=alert.type,
+                severity=alert.severity,
+                summary=_alert_summary(alert.details),
+                root_cause=root,
+                mitigation=mit,
+            )
+        )
+    return matched
+
+
 def _get_window_cdrs(
     db: Session,
     *,
@@ -289,4 +358,5 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
             )
             for r in rows
         ],
+        alerts=_alerts_for_call(db, rows),
     )
