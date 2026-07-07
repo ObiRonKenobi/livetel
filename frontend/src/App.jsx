@@ -21,6 +21,19 @@ const SIP_CODE_WINDOW_SECONDS = 60
 const READ_KEY = 'livetel-read-alert-ids'
 const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000
 
+const OVERVIEW_CHARTS = [
+  { title: 'Latency', dataKey: 'avg_latency', color: '#00d4ff', unitSuffix: 'ms' },
+  { title: 'Jitter', dataKey: 'avg_jitter', color: '#a78bfa', unitSuffix: 'ms' },
+  { title: 'Packet Loss', dataKey: 'avg_packet_loss', color: '#ff073a', unitSuffix: '%' },
+  { title: 'MOS Score', dataKey: 'avg_mos', color: '#34d399', unitSuffix: null },
+]
+
+function chartUnit(chart) {
+  const span = `last ${CHART_HISTORY_MINUTES} min`
+  if (chart.unitSuffix) return `${chart.unitSuffix} · ${span}`
+  return span
+}
+
 const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'alerts', label: 'Alerts' },
@@ -148,29 +161,69 @@ function alertSummary(details) {
   return (idx >= 0 ? details.slice(0, idx) : details).trim()
 }
 
-const MetricChart = memo(function MetricChart({ title, dataKey, color, data, unit = '' }) {
+const MetricChart = memo(function MetricChart({
+  title,
+  dataKey,
+  color,
+  data,
+  unit = '',
+  height = 180,
+  fill = false,
+  onClick,
+  showTitle = true,
+  className = '',
+}) {
+  const interactive = Boolean(onClick)
+  const chart = (
+    <LineChart data={data}>
+      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+      <XAxis dataKey="time" stroke="#888" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+      <YAxis stroke="#888" tick={{ fontSize: 10 }} width={40} />
+      <Tooltip contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #333' }} labelStyle={{ color: '#00d4ff' }} />
+      <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} connectNulls={false} />
+    </LineChart>
+  )
+
   return (
-    <div className="bg-panel border border-border rounded-lg p-4 shadow-lg">
-      <h2 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wide">{title}</h2>
-      <ResponsiveContainer width="100%" height={180}>
-        <LineChart data={data}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-          <XAxis dataKey="time" stroke="#888" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-          <YAxis stroke="#888" tick={{ fontSize: 10 }} />
-          <Tooltip contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid #333' }} labelStyle={{ color: '#00d4ff' }} />
-          <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} connectNulls={false} />
-        </LineChart>
-      </ResponsiveContainer>
-      {unit && <p className="text-xs text-gray-500 mt-1">{unit}</p>}
+    <div
+      className={`bg-panel border border-border rounded-lg p-3 shadow-lg flex flex-col min-h-0 ${
+        interactive ? 'cursor-pointer hover:border-vibrantBlue/50 transition-colors' : ''
+      } ${className}`}
+      onClick={onClick}
+      onKeyDown={interactive ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onClick()
+        }
+      } : undefined}
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
+    >
+      {showTitle && (
+        <h2 className="text-sm font-semibold text-gray-300 mb-1 uppercase tracking-wide shrink-0">{title}</h2>
+      )}
+      <div className={fill ? 'flex-1 min-h-0' : undefined} style={fill ? undefined : { height }}>
+        <ResponsiveContainer width="100%" height={fill ? '100%' : height}>
+          {chart}
+        </ResponsiveContainer>
+      </div>
+      {unit && (
+        <p className="text-[10px] text-gray-500 mt-1 shrink-0">
+          {unit}
+          {interactive ? ' · click to expand' : ''}
+        </p>
+      )}
     </div>
   )
 })
 
-function Modal({ title, onClose, onBack, children, wide }) {
+function Modal({ title, onClose, onBack, children, wide, chart }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75" onClick={onClose}>
       <div
-        className={`bg-panel border border-border rounded-xl max-h-[90vh] overflow-hidden flex flex-col ${wide ? 'w-full max-w-4xl' : 'w-full max-w-2xl'}`}
+        className={`bg-panel border border-border rounded-xl max-h-[90vh] overflow-hidden flex flex-col ${
+          chart ? 'w-full max-w-5xl' : wide ? 'w-full max-w-4xl' : 'w-full max-w-2xl'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-border">
@@ -256,8 +309,8 @@ function AlertTicker({ alerts, unreadIds, onAlertClick }) {
   const doubled = [...items, ...items]
 
   return (
-    <div className="mb-4 bg-panel border border-neonRed/30 rounded-lg overflow-hidden cursor-pointer hover:border-neonRed/50" onClick={onAlertClick}>
-      <div className="flex items-center gap-2 px-3 py-2 bg-neonRed/10 border-b border-neonRed/20">
+    <div className="shrink-0 bg-panel border border-neonRed/30 rounded-lg overflow-hidden cursor-pointer hover:border-neonRed/50" onClick={onAlertClick}>
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-neonRed/10 border-b border-neonRed/20">
         <span className="text-neonRed text-xs font-bold uppercase tracking-widest">Live Alerts</span>
         {unread.length > 0 && <span className="text-xs bg-neonRed text-white px-2 py-0.5 rounded-full font-bold">{unread.length} new</span>}
       </div>
@@ -314,10 +367,10 @@ function CompactSipCodes({ errorCodes, onCodeClick }) {
   if (!entries.length) return null
   return (
     <div
-      className="bg-panel border border-border rounded-lg px-4 py-3 mb-4"
+      className="shrink-0 bg-panel border border-border rounded-lg px-3 py-2"
       title="Count of each SIP response code in signaling events from the last 60 seconds"
     >
-      <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">
+      <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
         SIP response codes · last {SIP_CODE_WINDOW_SECONDS} seconds
       </p>
       <div className="flex flex-wrap items-center gap-2">
@@ -337,7 +390,7 @@ function CompactSipCodes({ errorCodes, onCodeClick }) {
           )
         })}
       </div>
-      <p className="text-[10px] text-gray-600 mt-2">Click a code to view matching signaling events</p>
+      <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">Click a code to view matching signaling events</p>
     </div>
   )
 }
@@ -770,6 +823,7 @@ export default function App() {
   const [readIds, setReadIds] = useState(() => loadReadIds())
   const [newAlertPulse, setNewAlertPulse] = useState(false)
   const [drilldownStack, setDrilldownStack] = useState([])
+  const [expandedChart, setExpandedChart] = useState(null)
   const [readOnly, setReadOnly] = useState(false)
   const prevUnread = useRef(0)
 
@@ -954,10 +1008,10 @@ export default function App() {
 
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
       {tab === 'overview' && (
-        <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden gap-2">
           <AlertTicker alerts={alerts} unreadIds={readIds} onAlertClick={() => setTab('alerts')} />
           <CompactSipCodes errorCodes={metrics.error_codes} onCodeClick={(code) => openDrilldown({ type: 'sip-code', sipCode: code })} />
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+          <div className="shrink-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
             {[
               { label: 'Avg MOS', status: status.mos, value: (metrics.avg_mos || 0).toFixed(2) },
               { label: 'Latency', status: status.latency, value: `${metrics.avg_latency} ms` },
@@ -965,17 +1019,29 @@ export default function App() {
               { label: 'Packet Loss', status: status.packetLoss, value: `${metrics.avg_packet_loss}%` },
               { label: 'SIP Health', status: status.sipErrors, value: status.sipErrors === 'good' ? 'Normal' : 'Elevated' },
             ].map(({ label, status: s, value }) => (
-              <div key={label} className="bg-panel border border-border rounded-lg px-3 py-2.5 flex items-center gap-2">
+              <div key={label} className="bg-panel border border-border rounded-lg px-2.5 py-2 flex items-center gap-2">
                 <StatusDot status={s} />
-                <div><p className="text-[10px] text-gray-500 uppercase">{label}</p><p className="text-sm font-semibold tabular-nums">{value}</p></div>
+                <div className="min-w-0">
+                  <p className="text-[10px] text-gray-500 uppercase truncate">{label}</p>
+                  <p className="text-sm font-semibold tabular-nums truncate">{value}</p>
+                </div>
               </div>
             ))}
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-2">
-            <MetricChart title="Latency" dataKey="avg_latency" color="#00d4ff" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
-            <MetricChart title="Jitter" dataKey="avg_jitter" color="#a78bfa" data={history} unit={`ms · last ${CHART_HISTORY_MINUTES} min`} />
-            <MetricChart title="Packet Loss" dataKey="avg_packet_loss" color="#ff073a" data={history} unit={`% · last ${CHART_HISTORY_MINUTES} min`} />
-            <MetricChart title="MOS Score" dataKey="avg_mos" color="#34d399" data={history} unit={`last ${CHART_HISTORY_MINUTES} min`} />
+          <div className="flex-1 min-h-0 grid grid-cols-2 grid-rows-2 gap-2">
+            {OVERVIEW_CHARTS.map((chart) => (
+              <MetricChart
+                key={chart.dataKey}
+                title={chart.title}
+                dataKey={chart.dataKey}
+                color={chart.color}
+                data={history}
+                unit={chartUnit(chart)}
+                fill
+                className="h-full"
+                onClick={() => setExpandedChart(chart)}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -1013,6 +1079,24 @@ export default function App() {
         onDismissAlert={dismissAlert}
         dismissEnabled={!readOnly}
       />
+
+      {expandedChart && (
+        <Modal
+          title={`${expandedChart.title} — ${chartUnit(expandedChart)}`}
+          onClose={() => setExpandedChart(null)}
+          chart
+        >
+          <MetricChart
+            title={expandedChart.title}
+            dataKey={expandedChart.dataKey}
+            color={expandedChart.color}
+            data={history}
+            unit={chartUnit(expandedChart)}
+            height={420}
+            showTitle={false}
+          />
+        </Modal>
+      )}
 
       <footer className="shrink-0 pt-2 text-center text-xs text-gray-600">Metrics {POLL_METRICS_MS / 1000}s · CDR {POLL_CDR_MS / 1000}s · Alerts {POLL_ALERTS_MS / 1000}s · 24h retention</footer>
     </div>
