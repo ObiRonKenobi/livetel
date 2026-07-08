@@ -25,6 +25,7 @@ ALERT_CORRELATION_AFTER_SECONDS = 45
 _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
 _CALL_ID_EXACT_RE = re.compile(r"^[a-f0-9]{16}$", re.I)
 _open_alerts_cache: tuple[float, list[Alert]] | None = None
+_open_alert_call_index_cache: tuple[float, tuple[int, ...], list[tuple[Alert, set[str]]]] | None = None
 
 
 def _like_escape(term: str) -> str:
@@ -275,12 +276,30 @@ def _open_alert_call_index(
     return index
 
 
+def _open_alert_call_index_cached(
+    db: Session, open_alerts: list[Alert]
+) -> list[tuple[Alert, set[str]]]:
+    global _open_alert_call_index_cache
+    now_mono = time.monotonic()
+    ttl = settings.alert_windows_cache_seconds
+    key = tuple(a.id for a in open_alerts)
+    if (
+        _open_alert_call_index_cache is not None
+        and now_mono - _open_alert_call_index_cache[0] < ttl
+        and _open_alert_call_index_cache[1] == key
+    ):
+        return _open_alert_call_index_cache[2]
+    index = _open_alert_call_index(db, open_alerts)
+    _open_alert_call_index_cache = (now_mono, key, index)
+    return index
+
+
 def _alert_correlated_cdrs_for_list(db: Session, open_alerts: list[Alert]) -> list[CDR]:
     """All CDR legs that match an open alert (for pinning on CDR page 1)."""
     if not open_alerts:
         return []
     seen: set[int] = set()
-    index = _open_alert_call_index(db, open_alerts)
+    index = _open_alert_call_index_cached(db, open_alerts)
     rows: list[CDR] = []
     for alert, call_ids in index:
         start, end = _correlation_window(alert)
@@ -361,8 +380,9 @@ def _open_alerts_cached(db: Session) -> list[Alert]:
 
 
 def invalidate_alert_windows_cache() -> None:
-    global _open_alerts_cache
+    global _open_alerts_cache, _open_alert_call_index_cache
     _open_alerts_cache = None
+    _open_alert_call_index_cache = None
 
 
 def _alert_summary(details: str) -> str:
@@ -462,7 +482,7 @@ def _get_window_cdrs(
 
     call_ids = {r.call_id for r in page_rows}
     status_map = _call_dispositions(db, call_ids)
-    alert_index = _open_alert_call_index(db, open_alerts)
+    alert_index = _open_alert_call_index_cached(db, open_alerts)
     severities = _alert_severities_for_rows(page_rows, alert_index)
 
     items = [
@@ -535,7 +555,7 @@ def get_cdrs(
 
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
-    alert_index = _open_alert_call_index(db, open_alerts)
+    alert_index = _open_alert_call_index_cached(db, open_alerts)
     severities = _alert_severities_for_rows(rows, alert_index)
 
     items = [
@@ -580,7 +600,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
     status = _call_dispositions(db, {cid}).get(cid, "completed")
     phase = _call_flow_phase(status, rows)
     open_alerts = _open_alerts_cached(db)
-    alert_index = _open_alert_call_index(db, open_alerts)
+    alert_index = _open_alert_call_index_cached(db, open_alerts)
     severities = _alert_severities_for_rows(rows, alert_index)
 
     return SipFlowResponse(
