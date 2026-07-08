@@ -796,6 +796,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
   const [page, setPage] = useState(1)
   const [cdrMeta, setCdrMeta] = useState({ total_pages: CDR_MAX_PAGES, total_count: 0, page_size: CDR_PAGE_SIZE })
   const [paused, setPaused] = useState(false)
+  const [alertOnly, setAlertOnly] = useState(false)
   const scrollRef = useRef(null)
   const pausedRef = useRef(false)
   const searching = search.trim().length > 0
@@ -806,6 +807,11 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
     setPaused(false)
     if (scrollRef.current) scrollRef.current.scrollTop = 0
   }, [search])
+
+  useEffect(() => {
+    setPage(1)
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [alertOnly])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -829,6 +835,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
       try {
         const params = new URLSearchParams({ page: String(page), page_size: String(CDR_PAGE_SIZE) })
         if (searching) params.set('search', search.trim())
+        if (alertOnly) params.set('alert_only', 'true')
         const res = await fetch(`${CDRS_URL}?${params}`)
         const data = await res.json()
         const items = Array.isArray(data) ? data : (data.items || [])
@@ -846,7 +853,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
       const id = setInterval(fetchCdrs, POLL_CDR_MS)
       return () => clearInterval(id)
     }
-  }, [search, searching, page, paused])
+  }, [search, searching, page, paused, alertOnly])
 
   const goPage = (p) => {
     setPage(p)
@@ -869,18 +876,35 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
           {' · '}{searching ? `${cdrMeta.total_count.toLocaleString()} matches` : `${CDR_BROWSE_MAX.toLocaleString()} record window`}
         </span>
       </div>
-      <p className="shrink-0 text-[10px] text-gray-600">
-        <span className="text-green-400">●</span> active call
-        <span className="mx-2">·</span>
-        <span className="text-gray-500">●</span> completed
-        <span className="mx-2">·</span>
-        <span className="text-neonRed">●</span> failed / disconnected
-        <span className="mx-2">·</span>
-        <span className="text-neonRed">▲</span> alert-correlated row
-        {paused && page === 1 && !searching && (
-          <span className="ml-3 text-yellow-400/90">Updates paused — scroll to top to resume</span>
-        )}
-      </p>
+      <div className="shrink-0 flex items-start justify-between gap-3">
+        <p className="text-[10px] text-gray-600 flex-1 min-w-0">
+          <span className="text-green-400">●</span> active call
+          <span className="mx-2">·</span>
+          <span className="text-gray-500">●</span> completed
+          <span className="mx-2">·</span>
+          <span className="text-neonRed">●</span> failed / disconnected
+          <span className="mx-2">·</span>
+          <span className="text-neonRed">▲</span> alert-correlated row
+          {paused && page === 1 && !searching && !alertOnly && (
+            <span className="ml-3 text-yellow-400/90">Updates paused — scroll to top to resume</span>
+          )}
+        </p>
+        <label className="shrink-0 flex items-center gap-2 text-[10px] text-gray-400 select-none pt-0.5">
+          <span className="whitespace-nowrap">Alert rows only</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={alertOnly}
+            onClick={() => setAlertOnly((v) => !v)}
+            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${alertOnly ? 'bg-neonRed/80' : 'bg-gray-600'}`}
+            title={alertOnly ? 'Showing alert-correlated rows only' : 'Show all CDR rows'}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${alertOnly ? 'translate-x-4' : 'translate-x-0'}`}
+            />
+          </button>
+        </label>
+      </div>
       <div className="flex-1 min-h-0 flex flex-col bg-panel border border-border rounded-lg overflow-hidden">
         <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
           <table className="w-full text-sm">
@@ -900,7 +924,9 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
             </thead>
             <tbody className="relative z-0">
               {cdrs.length === 0 && (
-                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-500">No events match.</td></tr>
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-500">
+                  {alertOnly ? 'No alert-correlated events for open alerts.' : 'No events match.'}
+                </td></tr>
               )}
               {cdrs.map((row) => (
                 <tr

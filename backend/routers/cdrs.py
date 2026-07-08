@@ -300,26 +300,6 @@ def _alert_correlated_cdrs_for_list(db: Session, open_alerts: list[Alert]) -> li
     return rows
 
 
-def _merge_cdr_page_with_alerts(
-    page_rows: list[CDR], alert_rows: list[CDR], page_size: int
-) -> list[CDR]:
-    """Prepend alert-correlated rows so icons stay visible on the live CDR stream."""
-    if not alert_rows:
-        return page_rows
-    page_ids = {r.id for r in page_rows}
-    pinned = [r for r in alert_rows if r.id not in page_ids]
-    merged: list[CDR] = []
-    seen: set[int] = set()
-    for r in pinned + page_rows:
-        if r.id in seen:
-            continue
-        seen.add(r.id)
-        merged.append(r)
-        if len(merged) >= page_size:
-            break
-    return merged
-
-
 def _alert_tracker_error_codes(db: Session, open_alerts: list[Alert]) -> dict[str, int]:
     """Counts per terminal SIP code tied to open alerts — clears when alerts dismiss."""
     counts: dict[str, int] = {}
@@ -512,6 +492,7 @@ def get_cdrs(
     sip_code: int | None = Query(default=None, ge=100, le=699),
     window_seconds: int | None = Query(default=None, ge=1, le=3600),
     alert_correlated: bool = Query(default=False),
+    alert_only: bool = Query(default=False),
 ) -> CdrListResponse:
     if window_seconds is not None or alert_correlated:
         return _get_window_cdrs(
@@ -523,30 +504,34 @@ def get_cdrs(
             alert_correlated=alert_correlated,
         )
 
-    cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
-    query = db.query(CDR).filter(CDR.timestamp >= cutoff)
-
-    term = search.strip()
-    if term:
-        if _is_call_id_search(term):
-            query = query.filter(CDR.call_id.ilike(f"{_like_escape(term.lower())}%", escape="\\"))
-        else:
-            query = query.filter(_search_clause(term))
-
-    max_browsable = page_size * MAX_CDR_PAGES
-    total_in_db = query.count() if term else max_browsable
-    total_count = min(total_in_db, max_browsable)
-    total_pages = MAX_CDR_PAGES
-    safe_page = min(max(1, page), MAX_CDR_PAGES)
     safe_page_size = min(page_size, CDR_PAGE_SIZE)
-    offset = (safe_page - 1) * safe_page_size
-
-    rows = query.order_by(CDR.id.desc()).offset(offset).limit(safe_page_size).all()
-
     open_alerts = _open_alerts_cached(db)
-    if safe_page == 1 and not term:
-        alert_rows = _alert_correlated_cdrs_for_list(db, open_alerts)
-        rows = _merge_cdr_page_with_alerts(rows, alert_rows, safe_page_size)
+
+    if alert_only:
+        all_rows = _alert_correlated_cdrs_for_list(db, open_alerts)
+        total_count = len(all_rows)
+        total_pages = max(1, (total_count + safe_page_size - 1) // safe_page_size) if total_count else 1
+        safe_page = min(max(1, page), total_pages)
+        offset = (safe_page - 1) * safe_page_size
+        rows = all_rows[offset : offset + safe_page_size]
+    else:
+        cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
+        query = db.query(CDR).filter(CDR.timestamp >= cutoff)
+
+        term = search.strip()
+        if term:
+            if _is_call_id_search(term):
+                query = query.filter(CDR.call_id.ilike(f"{_like_escape(term.lower())}%", escape="\\"))
+            else:
+                query = query.filter(_search_clause(term))
+
+        max_browsable = safe_page_size * MAX_CDR_PAGES
+        total_in_db = query.count() if term else max_browsable
+        total_count = min(total_in_db, max_browsable)
+        total_pages = MAX_CDR_PAGES
+        safe_page = min(max(1, page), MAX_CDR_PAGES)
+        offset = (safe_page - 1) * safe_page_size
+        rows = query.order_by(CDR.id.desc()).offset(offset).limit(safe_page_size).all()
 
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
@@ -566,7 +551,7 @@ def get_cdrs(
         items=items,
         page=safe_page,
         page_size=safe_page_size,
-        total_pages=total_pages,
+        total_pages=total_pages if alert_only else MAX_CDR_PAGES,
         total_count=total_count,
     )
 
