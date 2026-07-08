@@ -454,7 +454,7 @@ function SipTrackerBar({ sipCodes, alertErrorCodes, onLiveCodeClick, onAlertCode
       {hasAlert && (
         <div
           className={`${hasLive ? 'sm:flex-1' : 'w-full'} min-w-0 bg-panel border border-neonRed/30 rounded-lg px-3 py-2`}
-          title="Terminal SIP error codes correlated to open alerts — dismiss alert to clear"
+          title="CDR rows with terminal SIP errors correlated to open alerts — count drops when alerts dismiss"
         >
           <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
             Open alerts · SIP error codes
@@ -468,14 +468,14 @@ function SipTrackerBar({ sipCodes, alertErrorCodes, onLiveCodeClick, onAlertCode
                   type="button"
                   onClick={() => onAlertCodeClick?.(n)}
                   className="text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 hover:ring-neonRed/40 bg-neonRed/20 text-neonRed"
-                  title={`View ${count} alert-correlated events with SIP ${n} ${label}`}
+                  title={`View ${count} alert-correlated CDR rows with SIP ${n} ${label}`}
                 >
                   {n} {label}: {count}
                 </button>
               )
             })}
           </div>
-          <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">Clears when related alerts are resolved or marked false positive</p>
+          <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">CDR rows from open alerts only — count drops when resolved or false positive</p>
         </div>
       )}
     </div>

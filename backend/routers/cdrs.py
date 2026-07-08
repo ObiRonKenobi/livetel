@@ -301,7 +301,7 @@ def _alert_correlated_cdrs_for_list(db: Session, open_alerts: list[Alert]) -> li
 
 
 def _alert_tracker_error_codes(db: Session, open_alerts: list[Alert]) -> dict[str, int]:
-    """Counts per terminal SIP code tied to open alerts — clears when alerts dismiss."""
+    """CDR row counts per terminal SIP code tied to open alerts — drops rows when alerts dismiss."""
     counts: dict[str, int] = {}
     for cdr in _collect_alert_tracker_cdrs(db, open_alerts):
         key = str(cdr.sip_code)
