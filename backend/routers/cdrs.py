@@ -355,6 +355,30 @@ def _alert_severities_for_rows(
     return {r.id: _cdr_alert_severity(r, alert_index) for r in rows}
 
 
+def _alert_severities_for_page(
+    rows: list[CDR], open_alerts: list[Alert]
+) -> dict[int, str | None]:
+    """Annotate only the current page rows — no per-alert full-window scans."""
+    if not rows or not open_alerts:
+        return {r.id: None for r in rows}
+    windows = [(_correlation_window(a), a) for a in open_alerts]
+    out: dict[int, str | None] = {}
+    for cdr in rows:
+        best: str | None = None
+        for (start, end), alert in windows:
+            if cdr.timestamp < start or cdr.timestamp > end:
+                continue
+            if not _cdr_matches_anomaly(cdr, alert.type):
+                continue
+            sev = alert.severity if alert.severity in ("critical", "warning") else "warning"
+            if sev == "critical":
+                best = "critical"
+                break
+            best = best or sev
+        out[cdr.id] = best
+    return out
+
+
 def _fetch_open_alerts(db: Session) -> list[Alert]:
     cutoff = datetime.utcnow() - timedelta(hours=24)
     return (
@@ -482,8 +506,7 @@ def _get_window_cdrs(
 
     call_ids = {r.call_id for r in page_rows}
     status_map = _call_dispositions(db, call_ids)
-    alert_index = _open_alert_call_index_cached(db, open_alerts)
-    severities = _alert_severities_for_rows(page_rows, alert_index)
+    severities = _alert_severities_for_page(page_rows, open_alerts)
 
     items = [
         _cdr_to_response(
@@ -535,11 +558,13 @@ def get_cdrs(
         offset = (safe_page - 1) * safe_page_size
         rows = all_rows[offset : offset + safe_page_size]
     else:
-        cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
-        query = db.query(CDR).filter(CDR.timestamp >= cutoff)
+        query = db.query(CDR)
 
         term = search.strip()
         if term:
+            # Bound search to the retention window when looking for older rows by text.
+            cutoff = datetime.utcnow() - timedelta(hours=settings.prune_hours)
+            query = query.filter(CDR.timestamp >= cutoff)
             if _is_call_id_search(term):
                 query = query.filter(CDR.call_id.ilike(f"{_like_escape(term.lower())}%", escape="\\"))
             else:
@@ -551,12 +576,17 @@ def get_cdrs(
         total_pages = MAX_CDR_PAGES
         safe_page = min(max(1, page), MAX_CDR_PAGES)
         offset = (safe_page - 1) * safe_page_size
+        # Newest rows first via PK — avoid timestamp range scans on the hot path.
         rows = query.order_by(CDR.id.desc()).offset(offset).limit(safe_page_size).all()
 
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
-    alert_index = _open_alert_call_index_cached(db, open_alerts)
-    severities = _alert_severities_for_rows(rows, alert_index)
+    # Page-local annotation keeps /api/cdrs responsive under concurrent SQLite writers.
+    severities = (
+        _alert_severities_for_rows(rows, _open_alert_call_index_cached(db, open_alerts))
+        if alert_only
+        else _alert_severities_for_page(rows, open_alerts)
+    )
 
     items = [
         _cdr_to_response(
@@ -600,8 +630,7 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
     status = _call_dispositions(db, {cid}).get(cid, "completed")
     phase = _call_flow_phase(status, rows)
     open_alerts = _open_alerts_cached(db)
-    alert_index = _open_alert_call_index_cached(db, open_alerts)
-    severities = _alert_severities_for_rows(rows, alert_index)
+    severities = _alert_severities_for_page(rows, open_alerts)
 
     return SipFlowResponse(
         call_id=cid,
