@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     use_template_ai: bool = False
     enable_api_docs: bool = True
     read_only_demo: bool = False
-    alert_windows_cache_seconds: int = 15
+    alert_windows_cache_seconds: int = 30
 
 
 settings = Settings()

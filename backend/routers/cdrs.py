@@ -26,6 +26,7 @@ _HEX_RE = re.compile(r"^[a-f0-9]+$", re.I)
 _CALL_ID_EXACT_RE = re.compile(r"^[a-f0-9]{16}$", re.I)
 _open_alerts_cache: tuple[float, list[Alert]] | None = None
 _open_alert_call_index_cache: tuple[float, tuple[int, ...], list[tuple[Alert, set[str]]]] | None = None
+_alert_tracker_codes_cache: tuple[float, tuple[int, ...], dict[str, int]] | None = None
 
 
 def _like_escape(term: str) -> str:
@@ -238,17 +239,17 @@ def _collect_alert_tracker_cdrs(
     matched: list[CDR] = []
     for alert in open_alerts:
         start, end = _correlation_window(alert)
-        rows = (
-            db.query(CDR)
-            .filter(CDR.timestamp >= start, CDR.timestamp <= end)
-            .all()
-        )
+        filt = [
+            CDR.timestamp >= start,
+            CDR.timestamp <= end,
+            CDR.sip_code >= 400,
+            CDR.sip_code.notin_(_AUTH_CHALLENGE_CODES),
+        ]
+        if sip_code is not None:
+            filt.append(CDR.sip_code == sip_code)
+        rows = db.query(CDR).filter(*filt).all()
         for cdr in rows:
             if cdr.id in seen:
-                continue
-            if sip_code is not None and cdr.sip_code != sip_code:
-                continue
-            if not _is_tracker_sip_code(cdr.sip_code):
                 continue
             if not _cdr_matches_anomaly(cdr, alert.type):
                 continue
@@ -321,10 +322,22 @@ def _alert_correlated_cdrs_for_list(db: Session, open_alerts: list[Alert]) -> li
 
 def _alert_tracker_error_codes(db: Session, open_alerts: list[Alert]) -> dict[str, int]:
     """CDR row counts per terminal SIP code tied to open alerts — drops rows when alerts dismiss."""
+    global _alert_tracker_codes_cache
+    now_mono = time.monotonic()
+    ttl = settings.alert_windows_cache_seconds
+    key = tuple(a.id for a in open_alerts)
+    if (
+        _alert_tracker_codes_cache is not None
+        and now_mono - _alert_tracker_codes_cache[0] < ttl
+        and _alert_tracker_codes_cache[1] == key
+    ):
+        return _alert_tracker_codes_cache[2]
+
     counts: dict[str, int] = {}
     for cdr in _collect_alert_tracker_cdrs(db, open_alerts):
-        key = str(cdr.sip_code)
-        counts[key] = counts.get(key, 0) + 1
+        k = str(cdr.sip_code)
+        counts[k] = counts.get(k, 0) + 1
+    _alert_tracker_codes_cache = (now_mono, key, counts)
     return counts
 
 
@@ -404,9 +417,10 @@ def _open_alerts_cached(db: Session) -> list[Alert]:
 
 
 def invalidate_alert_windows_cache() -> None:
-    global _open_alerts_cache, _open_alert_call_index_cache
+    global _open_alerts_cache, _open_alert_call_index_cache, _alert_tracker_codes_cache
     _open_alerts_cache = None
     _open_alert_call_index_cache = None
+    _alert_tracker_codes_cache = None
 
 
 def _alert_summary(details: str) -> str:

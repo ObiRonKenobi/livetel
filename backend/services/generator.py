@@ -16,8 +16,8 @@ CARRIER_IPS = ["198.51.100.12", "203.0.113.45", "192.0.2.88", "198.18.0.50"]
 INTL_PREFIXES = ["+447", "+491", "+331", "+813", "+861", "+234"]
 SBC_URI = "sbc@livetel.net"
 
-TARGET_ACTIVE_MIN = 100
-TARGET_ACTIVE_MAX = 150
+TARGET_ACTIVE_MIN = 80
+TARGET_ACTIVE_MAX = 100
 RING_180_SEC_MIN = 8   # seconds of 180 Ringing before answer
 RING_180_SEC_MAX = 24
 SETUP_SEC_MIN = 0.8    # INVITE/100/(407) before first 180
@@ -99,7 +99,8 @@ _seeded = False
 
 
 def active_call_count() -> int:
-    return len(_live)
+    """Concurrent live calls: ringing + answered (excludes failed setup drip)."""
+    return len(_live) + len(_pending)
 
 
 def active_call_ids() -> set[str]:
@@ -107,9 +108,10 @@ def active_call_ids() -> set[str]:
 
 
 def avg_call_duration_sec() -> float:
-    if not _live:
+    calls = list(_live.values()) + list(_pending.values())
+    if not calls:
         return 0.0
-    return sum(c.duration_sec for c in _live.values()) / len(_live)
+    return sum(c.duration_sec for c in calls) / len(calls)
 
 
 def _phone10() -> str:
@@ -545,7 +547,7 @@ def _seed_live_calls() -> None:
         return
     _seeded = True
     now = datetime.utcnow()
-    target = random.randint(110, 130)
+    target = random.randint(TARGET_ACTIVE_MIN, TARGET_ACTIVE_MAX)
     with SessionLocal() as session:
         for _ in range(target):
             lc = _new_live_call(None, now=now)
@@ -562,12 +564,16 @@ def tick_live_calls() -> None:
     _seed_live_calls()
     now = datetime.utcnow()
 
+    # Short write transactions — release the SQLite lock between phases so API
+    # readers (metrics/cdrs) are not blocked for the full tick duration.
     with SessionLocal() as session:
         for call_id, lc in list(_emitting.items()):
             _emit_due(session, lc, now)
             if not lc.queued_cdrs:
                 del _emitting[call_id]
+        session.commit()
 
+    with SessionLocal() as session:
         for call_id, lc in list(_pending.items()):
             _emit_due(session, lc, now)
             if now >= lc.answered_at:
@@ -575,7 +581,9 @@ def tick_live_calls() -> None:
                 _emit_due(session, lc, now)
                 _live[call_id] = lc
                 del _pending[call_id]
+        session.commit()
 
+    with SessionLocal() as session:
         for call_id, lc in list(_live.items()):
             _emit_due(session, lc, now)
             elapsed = (now - lc.answered_at).total_seconds()
@@ -590,20 +598,23 @@ def tick_live_calls() -> None:
                 _queue_cdrs(lc, _teardown_cdrs(lc, lc.end_at))
                 _emit_due(session, lc, now)
                 del _live[call_id]
+        session.commit()
 
-        target = random.randint(TARGET_ACTIVE_MIN, TARGET_ACTIVE_MAX)
-        deficit = target - len(_live) - len(_pending) - len(_emitting)
-        if deficit > 0:
-            n_start = min(deficit, random.randint(1, 3))
-            for _ in range(n_start):
-                lc = _new_live_call(None, now=now)
-                if lc.failed:
-                    _queue_cdrs(lc, _setup_cdrs(lc))
-                    _emitting[lc.call_id] = lc
-                else:
-                    _queue_cdrs(lc, _setup_early_cdrs(lc))
-                    _pending[lc.call_id] = lc
+    target = random.randint(TARGET_ACTIVE_MIN, TARGET_ACTIVE_MAX)
+    deficit = target - len(_live) - len(_pending) - len(_emitting)
+    if deficit <= 0:
+        return
 
+    with SessionLocal() as session:
+        n_start = min(deficit, random.randint(1, 2))
+        for _ in range(n_start):
+            lc = _new_live_call(None, now=now)
+            if lc.failed:
+                _queue_cdrs(lc, _setup_cdrs(lc))
+                _emitting[lc.call_id] = lc
+            else:
+                _queue_cdrs(lc, _setup_early_cdrs(lc))
+                _pending[lc.call_id] = lc
         session.commit()
 
 

@@ -32,6 +32,7 @@ async def lifespan(_app: FastAPI):
         id="baseline_traffic",
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=10,
     )
     scheduler.add_job(inject_anomaly, "interval", minutes=5, id="inject_anomaly")
     scheduler.add_job(monitor_and_alert, "interval", seconds=30, id="monitor_and_alert")

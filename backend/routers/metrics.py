@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
@@ -15,6 +16,9 @@ router = APIRouter(prefix="/api", tags=["metrics"])
 
 _ESTABLISHED = and_(CDR.sip_method == "INVITE", CDR.sip_code == 200)
 _BUCKET = func.strftime("%Y-%m-%d %H:%M", CDR.timestamp)
+
+_history_cache: tuple[float, MetricsHistoryResponse] | None = None
+_HISTORY_CACHE_SECONDS = 15
 
 
 def _qos_averages(db: Session, cutoff: datetime) -> tuple[float, float, float, float] | None:
@@ -46,25 +50,6 @@ def _qos_averages(db: Session, cutoff: datetime) -> tuple[float, float, float, f
     return row
 
 
-def _bucket_averages(db: Session, start: datetime, *, established_only: bool) -> dict[str, tuple]:
-    filt = [CDR.timestamp >= start]
-    if established_only:
-        filt.append(_ESTABLISHED)
-    rows = (
-        db.query(
-            _BUCKET.label("bucket"),
-            func.avg(CDR.latency),
-            func.avg(CDR.jitter),
-            func.avg(CDR.packet_loss),
-            func.avg(CDR.mos),
-        )
-        .filter(*filt)
-        .group_by(_BUCKET)
-        .all()
-    )
-    return {r.bucket: r for r in rows}
-
-
 def _history_points(db: Session) -> list[MetricsHistoryPoint]:
     bucket_min = settings.metrics_history_bucket_minutes
     window_min = settings.metrics_history_minutes
@@ -73,14 +58,26 @@ def _history_points(db: Session) -> list[MetricsHistoryPoint]:
     end = datetime.utcnow().replace(second=0, microsecond=0)
     start = end - timedelta(minutes=window_min - bucket_min)
 
-    by_est = _bucket_averages(db, start, established_only=True)
-    by_all = _bucket_averages(db, start, established_only=False)
+    # Established INVITE/200 only — one group-by scan (avoid a second full-window pass).
+    by_est = (
+        db.query(
+            _BUCKET.label("bucket"),
+            func.avg(CDR.latency),
+            func.avg(CDR.jitter),
+            func.avg(CDR.packet_loss),
+            func.avg(CDR.mos),
+        )
+        .filter(CDR.timestamp >= start, _ESTABLISHED)
+        .group_by(_BUCKET)
+        .all()
+    )
+    by_est_map = {r.bucket: r for r in by_est}
 
     points: list[MetricsHistoryPoint] = []
     for i in range(n_buckets):
         t = start + timedelta(minutes=i * bucket_min)
         key = t.strftime("%Y-%m-%d %H:%M")
-        row = by_est.get(key) or by_all.get(key)
+        row = by_est_map.get(key)
         if row and row[1] is not None:
             points.append(
                 MetricsHistoryPoint(
@@ -139,8 +136,15 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
 
 @router.get("/metrics/history", response_model=MetricsHistoryResponse)
 def get_metrics_history(db: Session = Depends(get_db)) -> MetricsHistoryResponse:
-    return MetricsHistoryResponse(
+    global _history_cache
+    now_mono = time.monotonic()
+    if _history_cache is not None and now_mono - _history_cache[0] < _HISTORY_CACHE_SECONDS:
+        return _history_cache[1]
+
+    response = MetricsHistoryResponse(
         points=_history_points(db),
         window_minutes=settings.metrics_history_minutes,
         bucket_minutes=settings.metrics_history_bucket_minutes,
     )
+    _history_cache = (now_mono, response)
+    return response
