@@ -8,7 +8,8 @@ class MetricsResponse(BaseModel):
     avg_jitter: float
     avg_packet_loss: float
     avg_mos: float
-    error_codes: dict[str, int]
+    sip_codes: dict[str, int] = {}  # live counts last metrics window (100+)
+    error_codes: dict[str, int] = {}  # open-alert terminal SIP errors
 
 
 class MetricsHistoryPoint(BaseModel):

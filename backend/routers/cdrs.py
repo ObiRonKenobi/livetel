@@ -257,6 +257,69 @@ def _collect_alert_tracker_cdrs(
     return matched
 
 
+def _open_alert_call_index(
+    db: Session, open_alerts: list[Alert]
+) -> list[tuple[Alert, set[str]]]:
+    """Call IDs with at least one matching symptom in each alert's burst window."""
+    index: list[tuple[Alert, set[str]]] = []
+    for alert in open_alerts:
+        start, end = _correlation_window(alert)
+        rows = (
+            db.query(CDR)
+            .filter(CDR.timestamp >= start, CDR.timestamp <= end)
+            .all()
+        )
+        call_ids = {r.call_id for r in rows if _cdr_matches_anomaly(r, alert.type)}
+        if call_ids:
+            index.append((alert, call_ids))
+    return index
+
+
+def _alert_correlated_cdrs_for_list(db: Session, open_alerts: list[Alert]) -> list[CDR]:
+    """All CDR legs that match an open alert (for pinning on CDR page 1)."""
+    if not open_alerts:
+        return []
+    seen: set[int] = set()
+    index = _open_alert_call_index(db, open_alerts)
+    rows: list[CDR] = []
+    for alert, call_ids in index:
+        start, end = _correlation_window(alert)
+        candidates = (
+            db.query(CDR)
+            .filter(CDR.timestamp >= start, CDR.timestamp <= end, CDR.call_id.in_(call_ids))
+            .all()
+        )
+        for cdr in candidates:
+            if cdr.id in seen:
+                continue
+            if not _cdr_matches_anomaly(cdr, alert.type):
+                continue
+            seen.add(cdr.id)
+            rows.append(cdr)
+    rows.sort(key=lambda r: r.id, reverse=True)
+    return rows
+
+
+def _merge_cdr_page_with_alerts(
+    page_rows: list[CDR], alert_rows: list[CDR], page_size: int
+) -> list[CDR]:
+    """Prepend alert-correlated rows so icons stay visible on the live CDR stream."""
+    if not alert_rows:
+        return page_rows
+    page_ids = {r.id for r in page_rows}
+    pinned = [r for r in alert_rows if r.id not in page_ids]
+    merged: list[CDR] = []
+    seen: set[int] = set()
+    for r in pinned + page_rows:
+        if r.id in seen:
+            continue
+        seen.add(r.id)
+        merged.append(r)
+        if len(merged) >= page_size:
+            break
+    return merged
+
+
 def _alert_tracker_error_codes(db: Session, open_alerts: list[Alert]) -> dict[str, int]:
     """Counts per terminal SIP code tied to open alerts — clears when alerts dismiss."""
     counts: dict[str, int] = {}
@@ -266,12 +329,13 @@ def _alert_tracker_error_codes(db: Session, open_alerts: list[Alert]) -> dict[st
     return counts
 
 
-def _cdr_alert_severity(cdr: CDR, open_alerts: list[Alert]) -> str | None:
-    """Per-row severity: open alert whose burst window contains this leg and matches its type."""
+def _cdr_alert_severity(
+    cdr: CDR, alert_index: list[tuple[Alert, set[str]]]
+) -> str | None:
+    """Per-row severity: open alert whose burst matched this call and this leg's signature."""
     best: str | None = None
-    for alert in open_alerts:
-        start, end = _correlation_window(alert)
-        if not (start <= cdr.timestamp <= end):
+    for alert, call_ids in alert_index:
+        if cdr.call_id not in call_ids:
             continue
         if not _cdr_matches_anomaly(cdr, alert.type):
             continue
@@ -283,11 +347,13 @@ def _cdr_alert_severity(cdr: CDR, open_alerts: list[Alert]) -> str | None:
     return best
 
 
-def _alert_severities_for_rows(rows: list[CDR], open_alerts: list[Alert]) -> dict[int, str | None]:
-    """Batch alert icons for a CDR page — same rules as _cdr_alert_severity."""
-    if not rows or not open_alerts:
+def _alert_severities_for_rows(
+    rows: list[CDR], alert_index: list[tuple[Alert, set[str]]]
+) -> dict[int, str | None]:
+    """Batch alert icons for a CDR page."""
+    if not rows or not alert_index:
         return {r.id: None for r in rows}
-    return {r.id: _cdr_alert_severity(r, open_alerts) for r in rows}
+    return {r.id: _cdr_alert_severity(r, alert_index) for r in rows}
 
 
 def _fetch_open_alerts(db: Session) -> list[Alert]:
@@ -416,7 +482,8 @@ def _get_window_cdrs(
 
     call_ids = {r.call_id for r in page_rows}
     status_map = _call_dispositions(db, call_ids)
-    severities = _alert_severities_for_rows(page_rows, open_alerts)
+    alert_index = _open_alert_call_index(db, open_alerts)
+    severities = _alert_severities_for_rows(page_rows, alert_index)
 
     items = [
         _cdr_to_response(
@@ -476,10 +543,15 @@ def get_cdrs(
 
     rows = query.order_by(CDR.id.desc()).offset(offset).limit(safe_page_size).all()
 
+    open_alerts = _open_alerts_cached(db)
+    if safe_page == 1 and not term:
+        alert_rows = _alert_correlated_cdrs_for_list(db, open_alerts)
+        rows = _merge_cdr_page_with_alerts(rows, alert_rows, safe_page_size)
+
     call_ids = {r.call_id for r in rows}
     status_map = _call_dispositions(db, call_ids)
-    open_alerts = _open_alerts_cached(db)
-    severities = _alert_severities_for_rows(rows, open_alerts)
+    alert_index = _open_alert_call_index(db, open_alerts)
+    severities = _alert_severities_for_rows(rows, alert_index)
 
     items = [
         _cdr_to_response(
@@ -523,7 +595,8 @@ def get_call_flow(call_id: str, db: Session = Depends(get_db)) -> SipFlowRespons
     status = _call_dispositions(db, {cid}).get(cid, "completed")
     phase = _call_flow_phase(status, rows)
     open_alerts = _open_alerts_cached(db)
-    severities = _alert_severities_for_rows(rows, open_alerts)
+    alert_index = _open_alert_call_index(db, open_alerts)
+    severities = _alert_severities_for_rows(rows, alert_index)
 
     return SipFlowResponse(
         call_id=cid,

@@ -104,6 +104,14 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
     open_alerts = _open_alerts_cached(db)
     error_codes = _alert_tracker_error_codes(db, open_alerts)
 
+    sip_rows = (
+        db.query(CDR.sip_code, func.count())
+        .filter(CDR.timestamp >= cutoff, CDR.sip_code >= 100)
+        .group_by(CDR.sip_code)
+        .all()
+    )
+    sip_codes = {str(code): count for code, count in sip_rows}
+
     if averages is None:
         return MetricsResponse(
             active_calls=active_call_count(),
@@ -112,6 +120,7 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
             avg_jitter=0.0,
             avg_packet_loss=0.0,
             avg_mos=0.0,
+            sip_codes=sip_codes,
             error_codes=error_codes,
         )
 
@@ -123,6 +132,7 @@ def get_metrics(db: Session = Depends(get_db)) -> MetricsResponse:
         avg_jitter=round(float(avg_jitter), 1),
         avg_packet_loss=round(float(avg_packet_loss), 2),
         avg_mos=round(float(avg_mos), 2),
+        sip_codes=sip_codes,
         error_codes=error_codes,
     )
 

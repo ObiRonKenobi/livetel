@@ -287,8 +287,11 @@ function Modal({ title, onClose, onBack, children, wide, chart }) {
 function drilldownTitle(frame) {
   if (frame.type === 'alert') return alertTypeLabel(frame.alert.type).toUpperCase()
   if (frame.type === 'sip-code') {
-    const label = SIP_CODE_LABELS[frame.sipCode] || 'Error'
-    return `SIP ${frame.sipCode} ${label} — open alert evidence`
+    const label = SIP_CODE_LABELS[frame.sipCode] || (frame.alertCorrelated ? 'Error' : 'Response')
+    if (frame.alertCorrelated) {
+      return `SIP ${frame.sipCode} ${label} — open alert evidence`
+    }
+    return `SIP ${frame.sipCode} ${label} — last ${SIP_CODE_WINDOW_SECONDS}s`
   }
   return `SIP Call Flow — ${frame.callId}`
 }
@@ -400,37 +403,81 @@ const SIP_CODE_LABELS = {
   503: 'Unavailable',
 }
 
-function CompactSipCodes({ errorCodes, onCodeClick }) {
-  const entries = Object.entries(errorCodes || {})
+function liveSipCodeBadgeClass(code) {
+  if (isSipTerminalError(code)) return 'bg-neonRed/20 text-neonRed hover:ring-neonRed/40'
+  if (isSipAuthChallenge(code)) return 'bg-yellow-500/15 text-yellow-400 hover:ring-yellow-500/40'
+  return 'bg-vibrantBlue/10 text-vibrantBlue hover:ring-vibrantBlue/40'
+}
+
+function SipTrackerBar({ sipCodes, alertErrorCodes, onLiveCodeClick, onAlertCodeClick }) {
+  const liveEntries = Object.entries(sipCodes || {})
+    .map(([code, count]) => [Number(code), count])
+    .filter(([code, count]) => code >= 100 && count > 0)
+    .sort(([a], [b]) => a - b)
+  const alertEntries = Object.entries(alertErrorCodes || {})
     .map(([code, count]) => [Number(code), count])
     .filter(([code, count]) => isSipTerminalError(code) && count > 0)
     .sort(([a], [b]) => a - b)
-  if (!entries.length) return null
+
+  const hasLive = liveEntries.length > 0
+  const hasAlert = alertEntries.length > 0
+  if (!hasLive && !hasAlert) return null
+
   return (
-    <div
-      className="shrink-0 bg-panel border border-neonRed/30 rounded-lg px-3 py-2"
-      title="Terminal SIP error codes correlated to open alerts — dismiss alert to clear"
-    >
-      <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
-        Open alerts · SIP error codes
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        {entries.map(([n, count]) => {
-          const label = SIP_CODE_LABELS[n] || 'Error'
-          return (
-            <button
-              key={n}
-              type="button"
-              onClick={() => onCodeClick?.(n)}
-              className="text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 hover:ring-neonRed/40 bg-neonRed/20 text-neonRed"
-              title={`View ${count} alert-correlated events with SIP ${n} ${label}`}
-            >
-              {n} {label}: {count}
-            </button>
-          )
-        })}
-      </div>
-      <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">Clears when related alerts are resolved or marked false positive</p>
+    <div className="shrink-0 flex flex-col sm:flex-row gap-2">
+      {hasLive && (
+        <div
+          className={`${hasAlert ? 'sm:flex-1' : 'w-full'} min-w-0 bg-panel border border-border rounded-lg px-3 py-2`}
+          title={`SIP response code counts from the last ${SIP_CODE_WINDOW_SECONDS} seconds`}
+        >
+          <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
+            SIP response codes · last {SIP_CODE_WINDOW_SECONDS}s
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {liveEntries.map(([n, count]) => {
+              const label = SIP_CODE_LABELS[n] || 'Response'
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => onLiveCodeClick?.(n)}
+                  className={`text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 ${liveSipCodeBadgeClass(n)}`}
+                  title={`View ${count} events with SIP ${n} ${label} in the last ${SIP_CODE_WINDOW_SECONDS}s`}
+                >
+                  {n} {label}: {count}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {hasAlert && (
+        <div
+          className={`${hasLive ? 'sm:flex-1' : 'w-full'} min-w-0 bg-panel border border-neonRed/30 rounded-lg px-3 py-2`}
+          title="Terminal SIP error codes correlated to open alerts — dismiss alert to clear"
+        >
+          <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
+            Open alerts · SIP error codes
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {alertEntries.map(([n, count]) => {
+              const label = SIP_CODE_LABELS[n] || 'Error'
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => onAlertCodeClick?.(n)}
+                  className="text-xs font-mono px-2 py-1 rounded transition-colors hover:ring-1 hover:ring-neonRed/40 bg-neonRed/20 text-neonRed"
+                  title={`View ${count} alert-correlated events with SIP ${n} ${label}`}
+                >
+                  {n} {label}: {count}
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">Clears when related alerts are resolved or marked false positive</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -486,31 +533,38 @@ function SipEventRow({ ev, onSelect }) {
   )
 }
 
-function SipCodeEventsView({ sipCode, onSelectCall }) {
+function SipCodeEventsView({ sipCode, onSelectCall, alertCorrelated = false }) {
   const [events, setEvents] = useState(null)
-  const label = SIP_CODE_LABELS[sipCode] || 'Response'
+  const label = SIP_CODE_LABELS[sipCode] || (alertCorrelated ? 'Error' : 'Response')
 
   useEffect(() => {
     const params = new URLSearchParams({
       sip_code: String(sipCode),
-      alert_correlated: 'true',
       page: '1',
       page_size: '500',
     })
+    if (alertCorrelated) {
+      params.set('alert_correlated', 'true')
+    } else {
+      params.set('window_seconds', String(SIP_CODE_WINDOW_SECONDS))
+    }
     fetch(`${CDRS_URL}?${params}`)
       .then((r) => r.json())
       .then((data) => setEvents(Array.isArray(data) ? data : (data.items || [])))
       .catch(() => setEvents([]))
-  }, [sipCode])
+  }, [sipCode, alertCorrelated])
 
   if (events === null) return <p className="text-gray-500">Loading events…</p>
   if (events.length === 0) {
-    return <p className="text-gray-500">No alert-correlated signaling events with code {sipCode} {label}.</p>
+    const scope = alertCorrelated
+      ? 'No alert-correlated signaling events'
+      : `No signaling events in the last ${SIP_CODE_WINDOW_SECONDS} seconds`
+    return <p className="text-gray-500">{scope} with code {sipCode} {label}.</p>
   }
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-400">
-        {events.length} alert-correlated event{events.length === 1 ? '' : 's'} · click any row to open the full SIP call flow
+        {events.length} {alertCorrelated ? 'alert-correlated ' : ''}event{events.length === 1 ? '' : 's'} · click any row to open the full SIP call flow
       </p>
       <div className="max-h-[calc(100vh-280px)] overflow-y-auto space-y-1 pr-1">
         {events.map((ev) => (
@@ -690,7 +744,11 @@ function DrilldownModal({ stack, onClose, onBack, onPushCall, onDismissAlert, di
         />
       )}
       {current.type === 'sip-code' && (
-        <SipCodeEventsView sipCode={current.sipCode} onSelectCall={onPushCall} />
+        <SipCodeEventsView
+          sipCode={current.sipCode}
+          alertCorrelated={Boolean(current.alertCorrelated)}
+          onSelectCall={onPushCall}
+        />
       )}
       {current.type === 'call' && (
         <CallFlowView callId={current.callId} />
@@ -909,7 +967,7 @@ function CdrStreamTab({ search, setSearch, onSelectCall, className = '' }) {
 
 export default function App() {
   const [tab, setTab] = useState('overview')
-  const [metrics, setMetrics] = useState({ active_calls: 0, avg_latency: 0, avg_jitter: 0, avg_packet_loss: 0, avg_mos: 0, error_codes: {} })
+  const [metrics, setMetrics] = useState({ active_calls: 0, avg_latency: 0, avg_jitter: 0, avg_packet_loss: 0, avg_mos: 0, sip_codes: {}, error_codes: {} })
   const [alerts, setAlerts] = useState([])
   const [alertStats, setAlertStats] = useState({ open: 0, false_positive: 0, resolved: 0, window_hours: 24 })
   const [cdrSearch, setCdrSearch] = useState('')
@@ -1104,7 +1162,12 @@ export default function App() {
       {tab === 'overview' && (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden gap-2">
           <AlertTicker alerts={alerts} unreadIds={readIds} onAlertClick={() => setTab('alerts')} />
-          <CompactSipCodes errorCodes={metrics.error_codes} onCodeClick={(code) => openDrilldown({ type: 'sip-code', sipCode: code })} />
+          <SipTrackerBar
+            sipCodes={metrics.sip_codes}
+            alertErrorCodes={metrics.error_codes}
+            onLiveCodeClick={(code) => openDrilldown({ type: 'sip-code', sipCode: code, alertCorrelated: false })}
+            onAlertCodeClick={(code) => openDrilldown({ type: 'sip-code', sipCode: code, alertCorrelated: true })}
+          />
           <div className="shrink-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
             {[
               { label: 'Avg MOS', status: status.mos, value: (metrics.avg_mos || 0).toFixed(2) },
