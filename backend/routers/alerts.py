@@ -61,11 +61,21 @@ def get_alert_stats(db: Session = Depends(get_db)) -> AlertStatsResponse:
         .filter(Alert.timestamp >= cutoff, _hide_legacy_ai())
         .one()
     )
+    last_dismissed = (
+        db.query(func.max(func.coalesce(Alert.dismissed_at, Alert.timestamp)))
+        .filter(
+            Alert.timestamp >= cutoff,
+            Alert.dismissed_status.isnot(None),
+            _hide_legacy_ai(),
+        )
+        .scalar()
+    )
     return AlertStatsResponse(
         open=int(open_count or 0),
         false_positive=int(false_positive or 0),
         resolved=int(resolved or 0),
         window_hours=ALERT_WINDOW_HOURS,
+        last_dismissed_at=last_dismissed.isoformat() + "Z" if last_dismissed else None,
     )
 
 
@@ -108,6 +118,7 @@ def dismiss_alert(
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     alert.dismissed_status = body.status
+    alert.dismissed_at = datetime.utcnow()
     db.commit()
     invalidate_alert_windows_cache()
     return {"ok": "true", "status": body.status}

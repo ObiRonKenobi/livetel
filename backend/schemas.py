@@ -87,6 +87,7 @@ class AlertStatsResponse(BaseModel):
     false_positive: int
     resolved: int
     window_hours: int = 24
+    last_dismissed_at: str | None = None
 
 
 class AlertContextResponse(BaseModel):

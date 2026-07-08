@@ -32,7 +32,7 @@ body,
 .alert-ticker-track {
   display: flex;
   width: max-content;
-  animation: ticker-scroll 65s linear infinite; /* horizontal scroll speed (40s=fast, 90s=slow) */
+  animation: ticker-scroll 56.5s linear infinite; /* 15% faster than 65s */
 }
 
 .alert-ticker-track:hover {

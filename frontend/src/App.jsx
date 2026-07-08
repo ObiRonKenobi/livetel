@@ -339,12 +339,29 @@ function AlertCard({ alert, prominent, unread, onOpenDetail, onDismiss, dismissE
   )
 }
 
-function AlertTicker({ alerts, unreadIds, onAlertClick }) {
+function formatElapsedMmSs(fromIso) {
+  if (!fromIso) return '--:--'
+  const ms = Date.now() - new Date(fromIso).getTime()
+  if (ms < 0) return '00:00'
+  const totalSec = Math.floor(ms / 1000)
+  const mm = Math.floor(totalSec / 60)
+  const ss = totalSec % 60
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`
+}
+
+function AlertTicker({ alerts, unreadIds, onAlertClick, lastDismissedAt }) {
   const recent = filterRecentAlerts(alerts)
   const unread = recent.filter((a) => !unreadIds.has(a.id))
   const items = (unread.length ? unread : recent).slice(0, 10)
-  if (items.length === 0) return null
-  const doubled = [...items, ...items]
+  const doubled = items.length > 0 ? [...items, ...items] : []
+  const [elapsed, setElapsed] = useState(() => formatElapsedMmSs(lastDismissedAt))
+
+  useEffect(() => {
+    if (items.length > 0) return undefined
+    setElapsed(formatElapsedMmSs(lastDismissedAt))
+    const id = setInterval(() => setElapsed(formatElapsedMmSs(lastDismissedAt)), 1000)
+    return () => clearInterval(id)
+  }, [items.length, lastDismissedAt])
 
   return (
     <div className="shrink-0 bg-panel border border-neonRed/30 rounded-lg overflow-hidden cursor-pointer hover:border-neonRed/50" onClick={onAlertClick}>
@@ -352,21 +369,27 @@ function AlertTicker({ alerts, unreadIds, onAlertClick }) {
         <span className="text-neonRed text-xs font-bold uppercase tracking-widest">Live Alerts</span>
         {unread.length > 0 && <span className="text-xs bg-neonRed text-white px-2 py-0.5 rounded-full font-bold">{unread.length} new</span>}
       </div>
-      <div className="overflow-hidden py-2">
-        <div className="alert-ticker-track gap-8 px-4">
-          {doubled.map((alert, i) => {
-            const st = severityStyle(severityFor(alert))
-            return (
-              <span key={`${alert.id}-${i}`} className="inline-flex items-center gap-3 shrink-0 text-sm">
-                <span className={`font-bold uppercase text-xs px-1.5 rounded ${st.badge}`}>{severityFor(alert)}</span>
-                <span className={`font-bold uppercase text-xs ${st.text}`}>{alertTypeLabel(alert.type)}</span>
-                <span className="text-gray-400 max-w-sm truncate">{alertSummary(alert.details).replace(/\s+/g, ' ').slice(0, 70)}…</span>
-                <span className="text-gray-600 text-xs tabular-nums">{formatAlertTime(alert.time)}</span>
-                <span className="text-border">|</span>
-              </span>
-            )
-          })}
-        </div>
+      <div className="overflow-hidden py-2 min-h-[2.25rem] flex items-center">
+        {items.length === 0 ? (
+          <p className="px-4 text-xs text-gray-500">
+            It has been <span className="tabular-nums text-gray-400">{elapsed}</span> since our last Alert
+          </p>
+        ) : (
+          <div className="alert-ticker-track gap-8 px-4">
+            {doubled.map((alert, i) => {
+              const st = severityStyle(severityFor(alert))
+              return (
+                <span key={`${alert.id}-${i}`} className="inline-flex items-center gap-3 shrink-0 text-sm">
+                  <span className={`font-bold uppercase text-xs px-1.5 rounded ${st.badge}`}>{severityFor(alert)}</span>
+                  <span className={`font-bold uppercase text-xs ${st.text}`}>{alertTypeLabel(alert.type)}</span>
+                  <span className="text-gray-400 max-w-sm truncate">{alertSummary(alert.details).replace(/\s+/g, ' ').slice(0, 70)}…</span>
+                  <span className="text-gray-600 text-xs tabular-nums">{formatAlertTime(alert.time)}</span>
+                  <span className="text-border">|</span>
+                </span>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -421,16 +444,15 @@ function SipTrackerBar({ sipCodes, alertErrorCodes, onLiveCodeClick, onAlertCode
 
   const hasLive = liveEntries.length > 0
   const hasAlert = alertEntries.length > 0
-  if (!hasLive && !hasAlert) return null
 
   return (
     <div className="shrink-0 flex flex-col sm:flex-row gap-2">
       {hasLive && (
         <div
-          className={`${hasAlert ? 'sm:flex-1' : 'w-full'} min-w-0 bg-panel border border-border rounded-lg px-3 py-2`}
+          className="sm:flex-1 min-w-0 bg-panel border border-border rounded-lg px-3 py-2"
           title={`SIP response code counts from the last ${SIP_CODE_WINDOW_SECONDS} seconds`}
         >
-          <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
+          <p className="text-sm font-semibold text-gray-300 uppercase tracking-wide mb-1.5">
             SIP response codes · last {SIP_CODE_WINDOW_SECONDS}s
           </p>
           <div className="flex flex-wrap items-center gap-2">
@@ -451,14 +473,17 @@ function SipTrackerBar({ sipCodes, alertErrorCodes, onLiveCodeClick, onAlertCode
           </div>
         </div>
       )}
-      {hasAlert && (
-        <div
-          className={`${hasLive ? 'sm:flex-1' : 'w-full'} min-w-0 bg-panel border border-neonRed/30 rounded-lg px-3 py-2`}
-          title="CDR rows with terminal SIP errors correlated to open alerts — count drops when alerts dismiss"
-        >
-          <p className="text-xs text-gray-500 uppercase tracking-wide mb-1.5">
-            Open alerts · SIP error codes
-          </p>
+      <div
+        className={`${hasLive ? 'sm:flex-1' : 'w-full'} min-w-0 bg-panel border border-neonRed/30 rounded-lg px-3 py-2`}
+        title="CDR rows with terminal SIP errors correlated to open alerts — count drops when alerts dismiss"
+      >
+        <p className="text-sm font-semibold text-gray-300 uppercase tracking-wide mb-1.5 flex flex-wrap items-baseline gap-x-2">
+          <span>Open alerts · SIP error codes</span>
+          <span className="text-[10px] font-normal text-gray-600 normal-case tracking-normal">
+            CDR rows from open alerts only — count drops when resolved or false positive
+          </span>
+        </p>
+        {hasAlert ? (
           <div className="flex flex-wrap items-center gap-2">
             {alertEntries.map(([n, count]) => {
               const label = SIP_CODE_LABELS[n] || 'Error'
@@ -475,9 +500,10 @@ function SipTrackerBar({ sipCodes, alertErrorCodes, onLiveCodeClick, onAlertCode
               )
             })}
           </div>
-          <p className="text-[10px] text-gray-600 mt-1.5 hidden sm:block">CDR rows from open alerts only — count drops when resolved or false positive</p>
-        </div>
-      )}
+        ) : (
+          <p className="text-xs text-gray-500">No open alert error codes</p>
+        )}
+      </div>
     </div>
   )
 }
@@ -995,7 +1021,7 @@ export default function App() {
   const [tab, setTab] = useState('overview')
   const [metrics, setMetrics] = useState({ active_calls: 0, avg_latency: 0, avg_jitter: 0, avg_packet_loss: 0, avg_mos: 0, sip_codes: {}, error_codes: {} })
   const [alerts, setAlerts] = useState([])
-  const [alertStats, setAlertStats] = useState({ open: 0, false_positive: 0, resolved: 0, window_hours: 24 })
+  const [alertStats, setAlertStats] = useState({ open: 0, false_positive: 0, resolved: 0, window_hours: 24, last_dismissed_at: null })
   const [cdrSearch, setCdrSearch] = useState('')
   const [history, setHistory] = useState([])
   const [readIds, setReadIds] = useState(() => loadReadIds())
@@ -1052,6 +1078,7 @@ export default function App() {
         open: Math.max(0, prev.open - 1),
         false_positive: status === 'false_positive' ? prev.false_positive + 1 : prev.false_positive,
         resolved: status === 'resolved' ? prev.resolved + 1 : prev.resolved,
+        last_dismissed_at: new Date().toISOString(),
       }))
       markRead(id)
     } catch { /* keep */ }
@@ -1187,7 +1214,12 @@ export default function App() {
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
       {tab === 'overview' && (
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden gap-2">
-          <AlertTicker alerts={alerts} unreadIds={readIds} onAlertClick={() => setTab('alerts')} />
+          <AlertTicker
+            alerts={alerts}
+            unreadIds={readIds}
+            onAlertClick={() => setTab('alerts')}
+            lastDismissedAt={alertStats.last_dismissed_at}
+          />
           <SipTrackerBar
             sipCodes={metrics.sip_codes}
             alertErrorCodes={metrics.error_codes}
@@ -1205,7 +1237,7 @@ export default function App() {
               <div key={label} className="bg-panel border border-border rounded-lg px-2.5 py-2 flex items-center gap-2">
                 <StatusDot status={s} />
                 <div className="min-w-0">
-                  <p className="text-[10px] text-gray-500 uppercase truncate">{label}</p>
+                  <p className="text-sm font-semibold text-gray-300 uppercase tracking-wide truncate">{label}</p>
                   <p className="text-sm font-semibold tabular-nums truncate">{value}</p>
                 </div>
               </div>
